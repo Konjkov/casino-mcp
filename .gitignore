@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.claude/settings.local.json
+
+# CASINO leaves these next to a calculation
+out
+*.hist
+.runqmc.lock
+!tests/data/*/out

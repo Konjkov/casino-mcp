@@ -1,0 +1,79 @@
+[build-system]
+requires = ['setuptools>=61.0', 'wheel']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'casino-mcp'
+version = '0.1.0'
+description = 'An MCP control plane over the Fortran CASINO quantum Monte Carlo code'
+authors = [
+    {name = 'Vladimir Konkov', email = 'Konjkov.VV@gmail.com'},
+]
+maintainers = [
+    {name = 'Vladimir Konkov', email = 'Konjkov.VV@gmail.com'},
+]
+readme = 'README.md'
+license = 'MIT'
+license-files = ['LICENSE']
+keywords = ['mcp', 'casino', 'quantum monte carlo', 'qmc', 'claude']
+classifiers = [
+    'Development Status :: 3 - Alpha',
+    'Environment :: Console',
+    'Intended Audience :: Science/Research',
+    'Operating System :: POSIX :: Linux',
+    'Topic :: Scientific/Engineering :: Chemistry',
+    'Topic :: Scientific/Engineering :: Physics',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+]
+# tomllib is stdlib from 3.11; the MCP SDK needs 3.10+
+requires-python = '>=3.11'
+dependencies = [
+    'mcp>=2.0.0',
+]
+
+[project.optional-dependencies]
+dev = [
+    'pytest>=8.4.0',
+    'pytest-asyncio>=0.24.0',
+    'ruff>=0.6.0',
+    'build>=1.2.0',
+]
+
+[project.urls]
+repository = 'https://github.com/Konjkov/casino-mcp'
+issues = 'https://github.com/Konjkov/casino-mcp/issues'
+
+[project.scripts]
+casino-mcp = 'casino_mcp.cli:main'
+
+[tool.setuptools.packages.find]
+where = ['src']
+
+[tool.pytest.ini_options]
+testpaths = ['tests']
+# the integration suites need a real CASINO installation, so they are opt-in:
+#     pytest -m integration --examples-dir ~/PycharmProjects/PyCasino/examples
+addopts = '-m "not integration"'
+markers = [
+    'integration: needs a real CASINO installation (runqmc, envmc, or the examples tree)',
+]
+asyncio_mode = 'auto'
+
+[tool.ruff]
+src = ['src']
+line-length = 150
+respect-gitignore = true
+
+[tool.ruff.lint]
+select = ['E', 'F', 'W', 'I', 'UP', 'B']
+ignore = [
+    'E741',  # ambiguous-variable-name
+    'B008',  # function call in argument default: argparse and MCP tool signatures live on it
+]
+
+[tool.ruff.format]
+indent-style = 'space'
+line-ending = 'auto'
+quote-style = 'single'

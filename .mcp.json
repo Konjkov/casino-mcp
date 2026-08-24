@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "casino": {
+      "command": "casino-mcp",
+      "args": ["serve"],
+      "env": {
+        "CASINO_HOME": "/home/vladimir/bin/CASINO",
+        "CASINO_ARCH": "linuxpc-gcc-parallel.openblas"
+      }
+    }
+  }
+}

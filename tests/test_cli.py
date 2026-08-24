@@ -1,0 +1,147 @@
+"""The `casino-mcp` command.
+
+It exists so the control plane can be inspected without the model that drives it: every
+subcommand prints JSON to stdout and exits non-zero when the JSON carries an `error`, so a
+shell script and the model see the same thing.
+"""
+
+import json
+
+import pytest
+
+from casino_mcp import __version__, cli, settings
+
+
+def run(capsys, *argv):
+    code = cli.main(list(argv))
+    captured = capsys.readouterr()
+    return code, captured
+
+
+def test_no_arguments_prints_help(capsys):
+    code, captured = run(capsys)
+    assert code == 2
+    assert 'casino-mcp' in captured.out and 'serve' in captured.out
+
+
+def test_version(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(['--version'])
+    assert excinfo.value.code == 0
+    assert __version__ in capsys.readouterr().out
+
+
+def test_config_prints_the_installation_the_server_will_use(capsys, monkeypatch, tmp_path, fake_runqmc):
+    script = fake_runqmc()
+    monkeypatch.setenv('CASINO_HOME', str(tmp_path / 'CASINO'))
+    code, captured = run(capsys, 'config')
+
+    data = json.loads(captured.out)
+    assert code == 0
+    assert data['casino_home'] == str(tmp_path / 'CASINO')
+    assert data['runqmc'] == str(script)
+    assert data['environment']['CASINO_HOME'] == str(tmp_path / 'CASINO')
+
+
+def test_config_says_when_nothing_is_set(capsys):
+    code, captured = run(capsys, 'config')
+    assert code == 0
+    assert json.loads(captured.out)['environment'] == dict.fromkeys(json.loads(captured.out)['environment'])
+    assert 'no CASINO_* variable is set' in captured.err
+
+
+def test_config_says_when_runqmc_cannot_be_found(capsys, monkeypatch, tmp_path):
+    # both fallbacks have to be empty, or the developer's own installation answers instead
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    monkeypatch.setenv('CASINO_HOME', str(tmp_path / 'nowhere'))
+    code, captured = run(capsys, 'config')
+    assert code == 0
+    assert json.loads(captured.out)['runqmc'] is None
+    assert 'runqmc not found' in captured.err
+
+
+def test_help_documents_every_variable_that_is_read(capsys):
+    code, captured = run(capsys)
+    assert code == 2
+    for name, _ in settings.ENVIRONMENT:
+        assert name in captured.out
+
+
+def test_jobs_on_an_empty_registry(capsys):
+    code, captured = run(capsys, 'jobs')
+    assert code == 0
+    assert json.loads(captured.out) == {'jobs': []}
+
+
+def test_status_of_an_unknown_job_exits_nonzero(capsys):
+    code, captured = run(capsys, 'status', 'nope')
+    assert code == 1
+    assert json.loads(captured.out) == {'error': 'unknown job nope'}
+
+
+def test_parse_prints_a_structured_out_file(capsys, out_file):
+    code, captured = run(capsys, 'parse', str(out_file('vmc_single')))
+    parsed = json.loads(captured.out)
+    assert code == 0
+    assert parsed['result']['energy']['value'] == -2.861829862553
+
+
+def test_parse_accepts_a_directory(capsys, out_file):
+    code, captured = run(capsys, 'parse', str(out_file('vmc_dmc').parent))
+    assert code == 0
+    assert json.loads(captured.out)['runtype'] == 'vmc_dmc'
+
+
+def test_parse_of_a_missing_file_is_an_error_not_a_traceback(capsys, tmp_path):
+    code, captured = run(capsys, 'parse', str(tmp_path / 'nowhere'))
+    assert code == 1
+    assert 'cannot read' in json.loads(captured.out)['error']
+
+
+def test_run_refuses_and_exits_nonzero(capsys, tmp_path):
+    code, captured = run(capsys, 'run', str(tmp_path / 'nowhere'))
+    assert code == 1
+    assert 'not a directory' in json.loads(captured.out)['error']
+
+
+def test_run_forwards_its_flags(monkeypatch, capsys, workdir):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {'job_id': 'x'})
+    code, _ = run(capsys, 'run', str(workdir), '-p', '4', '--version', 'debug', '--overwrite', '--unlock')
+
+    assert code == 0
+    assert seen == {'workdir': str(workdir), 'nproc': 4, 'version': 'debug', 'overwrite': True, 'unlock': True}
+
+
+def test_stop_forwards_its_timeout(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'stop', lambda job_id, **kwargs: seen.update(job_id=job_id, **kwargs) or {})
+    run(capsys, 'stop', 'j', '--timeout', '3')
+    assert seen == {'job_id': 'j', 'timeout': 3.0}
+
+
+def test_stop_without_a_timeout_uses_the_default(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'stop', lambda job_id, **kwargs: seen.update(job_id=job_id, **kwargs) or {})
+    run(capsys, 'stop', 'j')
+    assert seen == {'job_id': 'j', 'timeout': settings.STOP_TIMEOUT}
+
+
+def test_serve_is_wired_to_the_mcp_server(monkeypatch, capsys):
+    """The one subcommand that must not print to stdout: stdout is the JSON-RPC stream."""
+    import casino_mcp.server
+
+    started = []
+    monkeypatch.setattr(casino_mcp.server.server, 'run', lambda **kwargs: started.append(kwargs))
+    code, captured = run(capsys, 'serve')
+
+    assert code == 0
+    assert started == [{'transport': 'stdio'}]
+    assert captured.out == ''
+
+
+def test_settings_are_read_at_call_time_not_at_import(capsys, monkeypatch, tmp_path):
+    """No cached config object, so a variable set after import still takes effect."""
+    monkeypatch.setenv('CASINO_HOME', str(tmp_path / 'later'))
+    _, captured = run(capsys, 'config')
+    assert json.loads(captured.out)['casino_home'] == str(tmp_path / 'later')

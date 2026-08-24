@@ -1,0 +1,221 @@
+"""Guardrails, command building, and one real launcher round trip against a fake runqmc.
+
+The end-to-end tests here spawn the actual launcher process and signal the actual process
+group. They need no CASINO, because what they exercise is ours: the process group, the exit
+code that outlives the caller, the log file, and the lock that must be cleared after a stop.
+"""
+
+import subprocess
+import time
+
+import pytest
+
+from casino_mcp import jobs, runtime, settings
+
+
+def wait_for(predicate, timeout=30.0, interval=0.1):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    raise AssertionError(f'timed out after {timeout}s')
+
+
+# --- finding runqmc ------------------------------------------------------------------
+
+
+def test_explicit_runqmc_wins(fake_runqmc):
+    script = fake_runqmc()
+    assert runtime.find_runqmc() == str(script)
+
+
+def test_explicit_runqmc_that_is_not_executable_is_not_silently_replaced(monkeypatch, tmp_path):
+    """Falling back to PATH here would run a different binary than $CASINO_RUNQMC names."""
+    dud = tmp_path / 'runqmc'
+    dud.write_text('#!/bin/sh\n')  # not chmod +x
+    monkeypatch.setenv('CASINO_RUNQMC', str(dud))
+    assert runtime.find_runqmc() is None
+
+
+def test_fallback_to_casino_home(tmp_path, monkeypatch, fake_runqmc):
+    script = fake_runqmc()
+    home = tmp_path / 'CASINO'
+    (home / 'bin_qmc').mkdir(parents=True)
+    script.replace(home / 'bin_qmc' / 'runqmc')
+    monkeypatch.delenv('CASINO_RUNQMC')
+    monkeypatch.setenv('CASINO_HOME', str(home))
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    assert runtime.find_runqmc() == str(home / 'bin_qmc' / 'runqmc')
+
+
+def test_missing_runqmc_says_where_it_looked(workdir, tmp_path, monkeypatch):
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    monkeypatch.setenv('CASINO_HOME', str(tmp_path / 'CASINO'))
+    error = runtime.start(str(workdir))['error']
+    assert 'runqmc not found' in error and str(tmp_path / 'CASINO' / 'bin_qmc') in error
+
+
+# --- the command ---------------------------------------------------------------------
+
+
+def test_command_carries_nproc_and_omits_the_default_version():
+    assert runtime.build_command('/bin/runqmc', 4, 'opt', unlock=False) == ['/bin/runqmc', '-p', '4']
+
+
+def test_command_names_a_non_default_version_and_unlock():
+    command = runtime.build_command('/bin/runqmc', 2, 'debug', unlock=True)
+    assert command == ['/bin/runqmc', '-p', '2', '--version=debug', '--unlock']
+
+
+# --- refusals ------------------------------------------------------------------------
+
+
+def test_refuses_a_directory_that_is_not_one(tmp_path):
+    assert 'not a directory' in runtime.start(str(tmp_path / 'nowhere'))['error']
+
+
+def test_refuses_a_directory_without_an_input_file(tmp_path):
+    (tmp_path / 'empty').mkdir()
+    assert 'no CASINO `input` file' in runtime.start(str(tmp_path / 'empty'))['error']
+
+
+def test_refuses_an_existing_out_and_says_how_to_proceed(workdir):
+    (workdir / 'out').write_text('an earlier run\n')
+    error = runtime.start(str(workdir))['error']
+    assert 'earlier run' in error and 'overwrite=true' in error
+
+
+def test_refuses_a_locked_directory(workdir):
+    (workdir / '.runqmc.lock').touch()
+    error = runtime.start(str(workdir))['error']
+    assert '.runqmc.lock' in error and 'unlock=true' in error
+
+
+def test_refuses_committed_reference_data_harder(workdir):
+    """The real risk is destroying an `out` that other work is validated against."""
+    if not subprocess.run(['git', 'init', '-q', str(workdir)], check=False).returncode == 0:
+        pytest.skip('git not available')
+    (workdir / 'out').write_text('reference data\n')
+    subprocess.run(['git', '-C', str(workdir), 'add', 'out'], check=True)
+    subprocess.run(
+        ['git', '-C', str(workdir), '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'reference'],
+        check=True,
+    )
+
+    error = runtime.start(str(workdir))['error']
+    assert 'committed reference data' in error
+    assert 'Copy the directory' in error
+
+
+def test_forbidden_directory_cannot_be_overridden(workdir, monkeypatch, fake_runqmc):
+    """`overwrite` and `unlock` unlock the other two guards. This one has no key at all."""
+    fake_runqmc()
+    monkeypatch.setenv('CASINO_MCP_FORBID', str(workdir.parent))
+
+    error = runtime.start(str(workdir), overwrite=True, unlock=True)['error']
+    assert 'CASINO_MCP_FORBID' in error and 'No override exists' in error
+
+
+def test_overwrite_unlocks_an_existing_out(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    (workdir / 'out').write_text('an earlier run\n')
+    assert 'job_id' in runtime.start(str(workdir), overwrite=True)
+
+
+def test_unlock_unlocks_a_stale_lock(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    (workdir / '.runqmc.lock').touch()
+    started = runtime.start(str(workdir), unlock=True)
+    assert 'job_id' in started
+    assert started['command'].endswith('--unlock')  # runqmc clears its own lock, we do not
+
+
+def test_refuses_a_nonsense_nproc(workdir, fake_runqmc):
+    fake_runqmc()
+    assert 'nproc must be at least 1' in runtime.start(str(workdir), nproc=0)['error']
+
+
+def test_a_refusal_creates_no_job_record(workdir):
+    (workdir / 'out').write_text('an earlier run\n')
+    runtime.start(str(workdir))
+    assert jobs.JobStore().index() == {}
+
+
+# --- a real launcher round trip ------------------------------------------------------
+
+
+def test_run_to_completion(workdir, tmp_path, fake_runqmc, python_path):
+    fake_runqmc(exit_code=0, out_text='FINAL RESULT: fake\n')
+    store = jobs.JobStore()
+
+    started = runtime.start(str(workdir), nproc=2, store=store)
+    assert started['command'].endswith('-p 2')
+    assert started['job_id'] in store.index()
+
+    state = wait_for(lambda: (s := runtime.status(started['job_id'], store))['status'] != 'running' and s)
+    assert state['status'] == 'finished'
+    assert state['exit_code'] == 0
+    assert state['runtime'] >= 0
+    assert (workdir / 'out').read_text() == 'FINAL RESULT: fake\n'
+    # runqmc's own chatter goes to the job directory, never into the MCP stdio stream
+    assert (tmp_path / 'state' / 'casino-mcp' / 'jobs' / started['job_id'] / 'runqmc.log').is_file()
+
+
+def test_a_failing_run_is_failed_not_finished(workdir, fake_runqmc, python_path):
+    fake_runqmc(exit_code=3)
+    started = runtime.start(str(workdir))
+
+    state = wait_for(lambda: (s := runtime.status(started['job_id']))['status'] != 'running' and s)
+    assert state['status'] == 'failed' and state['exit_code'] == 3
+
+
+def test_stop_kills_the_tree_and_clears_the_lock(workdir, fake_runqmc, python_path):
+    fake_runqmc(sleep=300)
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+
+    stopped = runtime.stop(started['job_id'], timeout=10.0)
+    assert stopped['status'] == 'stopped'
+    assert not (workdir / '.runqmc.lock').exists()
+    assert not jobs.proc_alive(started['pid'], None)
+
+
+def test_stopping_a_finished_job_says_so_instead_of_signalling(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    started = runtime.start(str(workdir))
+    wait_for(lambda: runtime.status(started['job_id'])['status'] != 'running')
+
+    stopped = runtime.stop(started['job_id'])
+    assert stopped['status'] == 'finished'
+    assert stopped['note'] == 'not running, nothing to stop'
+
+
+def test_unknown_job_ids_are_errors_not_exceptions():
+    assert runtime.status('nope') == {'error': 'unknown job nope'}
+    assert runtime.stop('nope') == {'error': 'unknown job nope'}
+
+
+def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    ids = [runtime.start(str(workdir), overwrite=True)['job_id'] for _ in range(3)]
+
+    listed = runtime.listing(limit=2)['jobs']
+    assert [job['job_id'] for job in listed] == sorted(ids, reverse=True)[:2]
+
+
+# --- defaults ------------------------------------------------------------------------
+
+
+def test_defaults_are_the_documented_ones(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    started = runtime.start(str(workdir))
+    assert started['command'].endswith(f'-p {settings.NPROC}')
+    assert '--version' not in started['command']  # the default flavour is runqmc's own
+
+
+def test_a_non_default_version_reaches_the_command_line(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    started = runtime.start(str(workdir), nproc=3, version='debug')
+    assert started['command'].endswith('-p 3 --version=debug')

@@ -1,0 +1,6 @@
+# The sdist has to be testable on its own, so it carries the test data.
+include CHANGELOG.md
+include tests/conftest.py
+recursive-include tests *.py
+recursive-include tests/data out
+include tools/protocol_dump.py
