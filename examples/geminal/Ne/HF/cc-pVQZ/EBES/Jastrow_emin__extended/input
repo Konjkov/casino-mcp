@@ -15,13 +15,14 @@ psi_s             : geminal        #*! Type of [anti]symmetrizing wfn (Text)
 runtype           : vmc_opt        #*! Type of calculation (Text)
 newrun            : T              #*! New run or continue old (Boolean)
 testrun           : F              #*! Test run flag (Boolean)
+random_seed       : standard       #*! Random seed (Text)
 
 # VMC
 vmc_method        : 1
 vmc_equil_nstep   : 5000           #*! Number of equilibration steps (Integer)
-vmc_nstep         : 1000000        #*! Number of steps (Integer)
+vmc_nstep         : 20000        #*! Number of steps (Integer)
 vmc_nblock        : 1              #*! Number of checkpoints (Integer)
-vmc_nconfig_write : 1000000        #*! Number of configs to write (Integer)
+vmc_nconfig_write : 20000        #*! Number of configs to write (Integer)
 vmc_decorr_period : 10             #*! VMC decorrelation period (0 - auto)
 writeout_vmc_hist : F              #*! Write vmc.hist file in VMC (Boolean)
 

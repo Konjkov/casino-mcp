@@ -70,6 +70,13 @@ Efficiency is the one number left out of the comparison. CASINO computes it from
 time, so a block that takes 0.00 s has none, and on the short runs here the line comes and goes
 between two runs of the same binary. That is the clock talking, not the output format.
 
+The two interrupted examples are skipped by both the tool and the test, which ask `parse_out`
+whether the run completed rather than keeping a list of names. Both were made by starting the
+run and sending SIGTERM to the CASINO ranks by hand — one inside the fourth optimisation cycle,
+one before the first energy was ever printed. Each keeps the `input` it was actually run with,
+which is why `gwfn/Kr` still carries the long, unseeded one: shortening it without re-running
+would make the input describe a calculation the `out` beside it is not.
+
 The runs are short on purpose. Most were cut to tens of seconds each — the whole tree is about
 ten minutes — which costs statistics but not a single line of output format. Two of them,
 `step_profile/casino_ne/auto.3` and `stowfn/He/HF/QZ4P/CBCS/Geminal`, are cut much further,

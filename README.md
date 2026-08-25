@@ -1,5 +1,10 @@
 # casino-mcp
 
+[![PyPI](https://img.shields.io/pypi/v/casino-mcp.svg)](https://pypi.org/project/casino-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/casino-mcp.svg)](https://pypi.org/project/casino-mcp/)
+[![CI](https://github.com/Konjkov/casino-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Konjkov/casino-mcp/actions/workflows/ci.yml)
+[![Licence](https://img.shields.io/pypi/l/casino-mcp.svg)](LICENSE)
+
 An MCP control plane over the Fortran [CASINO](https://vallico.net/casinoqmc/) quantum Monte
 Carlo code: start runs, know what is running, stop them, and read an `out` file as structured
 data instead of shipping 4000 lines of text into a model's context.
