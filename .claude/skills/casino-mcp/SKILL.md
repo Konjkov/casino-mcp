@@ -32,7 +32,8 @@ src/casino_mcp/
     server.py      MCPServer + tool definitions. A thin wrapper over runtime
     launcher.py    the child process that actually waits on runqmc
     cli.py         `casino-mcp serve | config | run | status | stop | jobs | parse`
-tests/             102 unit tests, no CASINO needed; tests/integration is opt-in
+examples/          18 real calculations, a settings cover. The only tree the tests read
+tests/             141 unit tests, no CASINO needed; tests/integration is opt-in
 tools/protocol_dump.py     the JSON-RPC by hand, no SDK. Read before adding a tool
 .mcp.json          registration for Claude Code (project scope)
 ```
@@ -169,7 +170,8 @@ Deliberately *not* implemented yet: anything that reads physics out of `out`.
 ## Next step
 
 **`parse_out` — a plain function, no MCP.** *(done: `src/casino_mcp/parse_out.py`,
-`tests/integration/test_examples_envmc.py`, 526/526 example files agree with `envmc`.)*
+`tests/integration/test_examples_envmc.py`. It was validated against all 526 calculations in
+PyCasino's examples tree; the 18 kept under `examples/` are the settings cover of those.)*
 
 What the file taught, and what the next parser-shaped thing should assume:
 
@@ -202,7 +204,7 @@ Then, in order:
 3. ~~The MCP server becomes a thin wrapper over that library; a CLI would be a second wrapper
    over the same code.~~ *(done: `server.py` delegates, `cli.py` is the second wrapper.)*
 4. ~~Split out as a shippable `casino-mcp` package.~~ *(done, 0.1.0: own repository,
-   `pyproject.toml`, 102 unit tests that need no CASINO, CI on 3.11–3.13.)*
+   `pyproject.toml`, 141 unit tests that need no CASINO, CI on 3.11–3.13.)*
 5. **`casino_results(job_id)`** — the tool that returns physics to the model. Everything it
    needs exists (`parse_out`, and `casino-mcp parse` as its CLI twin); what is left is
    deciding what a *job* returns as opposed to a *file*, and it is the next thing to build.
@@ -282,21 +284,30 @@ It is the first thing to run when a tool call refuses.
 ## Testing
 
 ```
-pytest                                                   # 102 tests, ~2 s, no CASINO
-pytest -m integration --examples-dir ~/PycharmProjects/PyCasino/examples
+pytest                     # 141 tests, ~2 s, no CASINO
+pytest -m integration      # needs runqmc/envmc, but nothing outside this repository
 ```
 
 The unit suite runs anywhere, including CI. What stands in for CASINO is a fake `runqmc`
 shell script (`fake_runqmc` in `tests/conftest.py`), which is enough to exercise the parts
 that are ours: the launcher, the process group, the exit code, the log file, the guardrails.
 The parser is checked against five real `out` files under `tests/data/` — one per shape:
-single VMC, varmin, emin, DMC, and an interrupted run.
+single VMC, varmin, emin, DMC, and an interrupted run — and, in `tests/test_examples.py`,
+against all 18 calculations in `examples/`.
+
+`examples/` is the tree both integration suites read, and it is deliberately in-repo: pip
+installing casino-mcp does not install PyCasino, so no test may point at its examples. The 18
+are a *cover*, chosen out of PyCasino's 526 so that every runtype, basis type, sampling
+method, optimiser and wavefunction option appears at least once, at the smallest total size
+that achieves it. `tests/test_examples.py` asserts the cover still holds, so a calculation
+cannot be deleted without the suite naming the setting that went with it. Paths are kept as
+they are upstream, so a failure here is looked up there unchanged.
 
 The integration suite needs a real installation and is deselected by default:
 
-- `tests/integration/test_examples_envmc.py` — `parse_out` against CASINO's own `envmc` over
-  the whole examples tree, one test per calculation. 525 pass, 1 skips (the interrupted run,
-  where envmc rebuilds an energy CASINO never printed). ~50 s.
+- `tests/integration/test_examples_envmc.py` — `parse_out` against CASINO's own `envmc`, one
+  test per calculation under `examples/`. 17 pass, 1 skips (the Kr run that stopped before
+  printing an energy, where envmc rebuilds one CASINO never wrote). ~1 s.
 - `tests/integration/test_client_smoke.py` — real stdio MCP against the installed
   `casino-mcp serve`: the tool schemas, the guardrail, a short VMC to completion, a long one
   stopped, and a job that outlives the server that started it.

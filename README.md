@@ -160,20 +160,25 @@ under a non-C locale.
 ## Tests
 
 ```bash
-pytest                      # 102 tests, ~2 s, no CASINO needed
+pytest                      # 141 tests, ~2 s, no CASINO needed
 ```
 
 The unit suite runs anywhere: the parser is checked against five real `out` files committed
-under `tests/data/`, and the launcher, the process group and the guardrails are exercised
-against a fake `runqmc` shell script.
+under `tests/data/` and against all eighteen calculations under `examples/`, and the launcher,
+the process group and the guardrails are exercised against a fake `runqmc` shell script.
 
 ```bash
-pytest -m integration --examples-dir ~/PycharmProjects/PyCasino/examples
+pytest -m integration
 ```
 
-The integration suite needs a real CASINO. It checks `parse_out` against CASINO's own `envmc`
-over an entire examples tree (526 files, ~50 s), and drives the server over real stdio MCP,
-running and stopping actual VMC calculations.
+The integration suite needs a real CASINO, but nothing outside this repository. It checks
+`parse_out` against CASINO's own `envmc` over every `out` in `examples/`, and drives the server
+over real stdio MCP, running and stopping actual VMC calculations.
+
+`examples/` holds eighteen calculations chosen as a cover of the settings CASINO can be run
+with — every runtype, basis type, optimiser and wavefunction option appears at least once, and
+so do the two files a parser gets wrong quietly: a run that never printed an energy, and one
+interrupted between optimisation cycles. `examples/README.md` says what each is there for.
 
 `tools/protocol_dump.py` speaks the JSON-RPC by hand with no SDK and prints every line in
 both directions. Read it before adding a tool.

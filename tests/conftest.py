@@ -19,13 +19,11 @@ import pytest
 DATA = Path(__file__).resolve().parent / 'data'
 READ_ENV = ('CASINO_HOME', 'CASINO_ARCH', 'CASINO_RUNQMC', 'CASINO_MCP_STATE_DIR', 'CASINO_MCP_FORBID', 'XDG_STATE_HOME')
 
-
-def pytest_addoption(parser):
-    parser.addoption(
-        '--examples-dir',
-        default=os.environ.get('CASINO_EXAMPLES'),
-        help='tree of CASINO example calculations for the integration suite (or $CASINO_EXAMPLES)',
-    )
+# The calculations the integration suite reads. They live in this repository and nowhere else:
+# installing casino-mcp does not install PyCasino, so nothing here may point at its examples.
+# The 18 are a settings cover -- one calculation per distinct runtype, basis, optimiser and
+# wavefunction option -- so a clean checkout has something of every kind to parse and re-run.
+EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
 
 
 @pytest.fixture(autouse=True)

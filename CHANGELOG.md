@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `examples/`: eighteen real CASINO calculations committed with the `out` files they produced,
+  and enough of their inputs to be re-run. They are a settings cover, not a sample — chosen out
+  of PyCasino's 526 so that every runtype, basis type, sampling method, optimiser and
+  wavefunction option appears at least once, at the smallest total size that achieves it,
+  together with a run that never printed an energy and one interrupted mid-optimisation.
+- `tests/test_examples.py`: the tree parses, and it still covers every setting it was
+  assembled to cover. Runs without CASINO, so a calculation cannot be dropped from `examples/`
+  without the suite naming the setting that went with it.
+
+### Changed
+
+- The integration suite reads `examples/` and nothing else: `--examples-dir`, `$CASINO_EXAMPLES`
+  and the dependency on a PyCasino checkout are gone. Installing casino-mcp does not install
+  PyCasino, so `pytest -m integration` now needs only CASINO itself.
+
 ## [0.1.0] — 2026-08-23
 
 First packaged release. The control plane works and is tested; the tools that return physics

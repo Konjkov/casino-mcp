@@ -17,3 +17,4 @@ out
 *.hist
 .runqmc.lock
 !tests/data/*/out
+!examples/**/out

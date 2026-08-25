@@ -1,6 +1,10 @@
-# The sdist has to be testable on its own, so it carries the test data.
+# The sdist has to be testable on its own, so it carries the test data. That now includes
+# `examples/`: tests/test_examples.py parses every calculation in it, and the integration
+# suite has nowhere else to look -- installing casino-mcp does not install PyCasino.
 include CHANGELOG.md
 include tests/conftest.py
 recursive-include tests *.py
 recursive-include tests/data out
+include examples/README.md
+recursive-include examples input out *.data *.casl
 include tools/protocol_dump.py

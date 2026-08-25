@@ -1,6 +1,6 @@
-"""Acceptance test for parse_out: every `out` in a real examples tree, against envmc.
+"""Acceptance test for parse_out: every `out` under `examples/`, against envmc.
 
-    pytest -m integration --examples-dir ~/PycharmProjects/PyCasino/examples
+    pytest -m integration
 
 envmc is the reference for what the VMC numbers in `out` mean, but it is not a copy of them:
 its Fortran helper recomputes the block averages and the error bars, so envmc's error is its
@@ -16,17 +16,16 @@ The ratio between envmc's variance error and CASINO's is only reported, at the e
 run. Reproducing it means reblocking from `vmc.hist`, which is a later stage and not a
 parser's job.
 
-Needs CASINO's `envmc` on the PATH and a tree of example calculations; without either, the
-whole module skips. Note that `endmc` misparses numbers under a non-C locale, which is why
-nothing here shells out to it.
+Needs CASINO's `envmc` on the PATH; without it the whole module skips. Note that `endmc`
+misparses numbers under a non-C locale, which is why nothing here shells out to it.
 """
 
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
+from conftest import EXAMPLES
 
 from casino_mcp.parse_out import parse_out
 
@@ -44,15 +43,12 @@ def pytest_generate_tests(metafunc):
     """One test per example `out`, so a failure names the calculation that produced it."""
     if 'out_path' not in metafunc.fixturenames:
         return
-    root = metafunc.config.getoption('--examples-dir')
-    paths = sorted(Path(root).expanduser().rglob('out')) if root else []
-    metafunc.parametrize('out_path', paths, ids=[str(p.parent.relative_to(Path(root).expanduser())) for p in paths])
+    paths = sorted(EXAMPLES.rglob('out'))
+    metafunc.parametrize('out_path', paths, ids=[str(p.parent.relative_to(EXAMPLES)) for p in paths])
 
 
 @pytest.fixture(scope='module', autouse=True)
 def requirements(request):
-    if not request.config.getoption('--examples-dir'):
-        pytest.skip('needs --examples-dir (or $CASINO_EXAMPLES)')
     if shutil.which('envmc') is None:
         pytest.skip('needs CASINO envmc on the PATH')
     yield

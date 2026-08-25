@@ -1,8 +1,8 @@
 """End-to-end check of the casino MCP server over real stdio MCP, driving real CASINO.
 
-    pytest -m integration --examples-dir ~/PycharmProjects/PyCasino/examples
+    pytest -m integration
 
-Copies a He example into a scratch directory, shortens the run, then drives
+Copies a He example out of `examples/` into a scratch directory, shortens the run, then drives
 casino_run / casino_status / casino_stop / casino_list_jobs as a client would. This is the
 only test that proves the tool schemas, the JSON round trip and the process handling work
 together; everything else in tests/ stops at the Python call.
@@ -19,25 +19,21 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from conftest import EXAMPLES
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 pytestmark = pytest.mark.integration
 
-EXAMPLE = Path('stowfn/He/HF/QZ4P/EBES/Slater')
+# The cheapest calculation in the tree: two electrons, one Slater determinant, no Jastrow.
+EXAMPLE = EXAMPLES / 'stowfn/He/HF/QZ4P/EBES/Slater'
 
 
 @pytest.fixture(scope='module')
-def example(request):
-    root = request.config.getoption('--examples-dir')
-    if not root:
-        pytest.skip('needs --examples-dir (or $CASINO_EXAMPLES)')
-    path = Path(root).expanduser() / EXAMPLE
-    if not (path / 'input').is_file():
-        pytest.skip(f'no {EXAMPLE} under {root}')
+def example():
     if shutil.which('runqmc') is None and not os.environ.get('CASINO_HOME'):
         pytest.skip('needs runqmc on the PATH or $CASINO_HOME')
-    return path
+    return EXAMPLE
 
 
 @pytest.fixture
