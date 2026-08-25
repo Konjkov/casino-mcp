@@ -8,3 +8,4 @@ recursive-include tests/data out
 include examples/README.md
 recursive-include examples input out *.data *.casl
 include tools/protocol_dump.py
+include tools/refresh_examples.py

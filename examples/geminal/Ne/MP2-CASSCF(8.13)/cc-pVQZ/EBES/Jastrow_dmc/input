@@ -15,22 +15,23 @@ psi_s             : geminal        #*! Type of [anti]symmetrizing wfn (Text)
 runtype           : vmc_dmc        #*! Type of calculation (Text)
 newrun            : T              #*! New run or continue old (Boolean)
 testrun           : F              #*! Test run flag (Boolean)
+random_seed       : standard       #*! Random seed (Text)
 
 # VMC
 vmc_method        : 1              #*! Configuration-by-configuration algorithm
 vmc_equil_nstep   : 5000           #*! Number of equilibration steps (Integer)
-vmc_nstep         : 1024           #*! Number of steps (Integer)
+vmc_nstep         : 256            #*! Number of steps (Integer)
 vmc_nblock        : 1              #*! Number of checkpoints (Integer)
-vmc_nconfig_write : 1024           #*! Number of configs to write (Integer)
+vmc_nconfig_write : 256            #*! Number of configs to write (Integer)
 vmc_decorr_period : 1              #*! VMC decorrelation period (0 - auto)
 
 # DMC
 dmc_method        : 2              #*! Configuration-by-configuration algorithm
-dmc_equil_nstep   : 10000          #*! Number of steps (Integer)
+dmc_equil_nstep   : 500            #*! Number of steps (Integer)
 dmc_equil_nblock  : 1              #*! Number of checkpoints (Integer)
-dmc_stats_nstep   : 50000          #*! Number of steps (Integer)
+dmc_stats_nstep   : 2000           #*! Number of steps (Integer)
 dmc_stats_nblock  : 5              #*! Number of checkpoints (Integer)
-dmc_target_weight : 1024.0         #*! Total target weight in DMC (Real)
+dmc_target_weight : 256.0          #*! Total target weight in DMC (Real)
 dtdmc             : 0.003333       #*! DMC time step (Real)
 use_tmove         : F              #*! Casula nl pp for DMC (Boolean)
 popstats          : T              #*! Collect population statistics (Boolean)

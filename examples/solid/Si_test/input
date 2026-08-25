@@ -19,6 +19,7 @@ complex_wf        : F              #*! Wave function real or complex (Boolean)
 runtype           : vmc            #*! Type of calculation (Text)
 newrun            : T              #*! New run or continue old (Boolean)
 testrun           : F              #*! Test run flag (Boolean)
+random_seed       : standard       #*! Random seed (Text)
 
 # VMC
 vmc_equil_nstep   : 5000           #*! Number of equilibration steps (Integer)

@@ -172,13 +172,24 @@ pytest -m integration
 ```
 
 The integration suite needs a real CASINO, but nothing outside this repository. It checks
-`parse_out` against CASINO's own `envmc` over every `out` in `examples/`, and drives the server
-over real stdio MCP, running and stopping actual VMC calculations.
+`parse_out` against CASINO's own `envmc` over every `out` in `examples/`, re-runs the whole
+tree against the installed binary, and drives the server over real stdio MCP, running and
+stopping actual VMC calculations.
 
 `examples/` holds eighteen calculations chosen as a cover of the settings CASINO can be run
 with — every runtype, basis type, optimiser and wavefunction option appears at least once, and
 so do the two files a parser gets wrong quietly: a run that never printed an energy, and one
 interrupted between optimisation cycles. `examples/README.md` says what each is there for.
+
+They are short and seeded, so the tree doubles as a check on CASINO itself: re-run it on a new
+release and any line the parser reads that has been renamed or dropped is named, rather than
+silently becoming a `None`. Only that is asserted — moved numbers are reported for a person to
+judge.
+
+```bash
+python tools/refresh_examples.py --nproc 4     # run the tree, report, touch nothing
+python tools/refresh_examples.py --nproc 4 --write   # adopt the new output
+```
 
 `tools/protocol_dump.py` speaks the JSON-RPC by hand with no SDK and prints every line in
 both directions. Read it before adding a tool.

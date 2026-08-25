@@ -295,13 +295,33 @@ The parser is checked against five real `out` files under `tests/data/` — one 
 single VMC, varmin, emin, DMC, and an interrupted run — and, in `tests/test_examples.py`,
 against all 18 calculations in `examples/`.
 
-`examples/` is the tree both integration suites read, and it is deliberately in-repo: pip
+`examples/` is the tree the integration suites read, and it is deliberately in-repo: pip
 installing casino-mcp does not install PyCasino, so no test may point at its examples. The 18
 are a *cover*, chosen out of PyCasino's 526 so that every runtype, basis type, sampling
 method, optimiser and wavefunction option appears at least once, at the smallest total size
 that achieves it. `tests/test_examples.py` asserts the cover still holds, so a calculation
 cannot be deleted without the suite naming the setting that went with it. Paths are kept as
 they are upstream, so a failure here is looked up there unchanged.
+
+The runs were then cut to tens of seconds each (the tree is ~10 minutes on 4 processes) and
+given `random_seed : standard`. That turns it from test data into a check on CASINO:
+`tools/refresh_examples.py` re-runs the tree and reports shape changes (a line renamed, a
+block dropped -- the parser has silently stopped reading something) apart from value changes,
+and only the shape is asserted. Two examples are cut below the point where CASINO can reblock,
+so the tree also holds the output shape of a run with too little data. What cannot be re-run
+are the two interrupted files; they keep the `out` they were committed with, and every suite
+skips them by asking `parse_out` whether the run completed rather than by keeping a list.
+
+Two things learned from building it, both of which the naive version of this test gets wrong:
+
+- **The seed does not pin an optimisation.** A plain VMC run repeats digit for digit under
+  `random_seed : standard`; `backflow/3_1_1/25` does not, because a `vmc_opt` cycle
+  redistributes configurations across MPI processes in an order the seed has no say in. Values
+  are therefore never asserted.
+- **`efficiency` is a clock reading, not a format.** CASINO derives it from a measured time, so
+  a block that took 0.00 s has none, and on these short runs the line appears and disappears
+  between two runs of the same binary. It is excluded from the field comparison; everything
+  else is compared.
 
 The integration suite needs a real installation and is deselected by default:
 

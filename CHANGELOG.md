@@ -16,12 +16,25 @@ All notable changes to this project are documented here. The format follows
 - `tests/test_examples.py`: the tree parses, and it still covers every setting it was
   assembled to cover. Runs without CASINO, so a calculation cannot be dropped from `examples/`
   without the suite naming the setting that went with it.
+- `tools/refresh_examples.py` and `tests/integration/test_examples_rerun.py`: the tree is
+  re-run against the installed CASINO and compared with what was committed. The test asserts
+  only that no phase, keyword or number `parse_out` reads has disappeared, which is what a
+  changed output format looks like from a parser's side. Moved values are reported, never
+  asserted: a new release may legitimately produce different numbers, and `random_seed` does
+  not pin an optimisation run anyway — it redistributes configurations across MPI processes and
+  lands somewhere slightly different each time. Efficiency is excluded from the comparison
+  entirely, being computed from a measured time that rounds to zero on a short block.
 
 ### Changed
 
 - The integration suite reads `examples/` and nothing else: `--examples-dir`, `$CASINO_EXAMPLES`
   and the dependency on a PyCasino checkout are gone. Installing casino-mcp does not install
   PyCasino, so `pytest -m integration` now needs only CASINO itself.
+- The example calculations were shortened and re-run in one pass, so the tree takes minutes
+  rather than days to reproduce. This costs statistics and no output format: the longest run
+  went from 2.5 hours to a couple of minutes with every phase, keyword and printed number
+  intact. Two examples are cut below the point where CASINO can reblock, which is the one
+  output shape the tree previously had no instance of.
 
 ## [0.1.0] — 2026-08-23
 

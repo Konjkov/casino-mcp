@@ -8,6 +8,7 @@ atom_basis_type   : gaussian
 runtype           : vmc
 newrun            : T
 testrun           : F
+random_seed       : standard       #*! Random seed (Text)
 
 vmc_method        : 1
 vmc_equil_nstep   : 5000
