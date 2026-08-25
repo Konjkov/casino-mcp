@@ -5,8 +5,13 @@ recomputes them with the parser would only assert that the parser agrees with it
 line numbers are asserted too -- they are how a claim made from a parsed number is checked
 against the file it came from, so a shifted line is a real defect, not a cosmetic one.
 
-The heavier oracle lives in tests/integration/test_examples_envmc.py: 526 example files
-against CASINO's own `envmc`. This suite is the part that runs anywhere, in a second.
+Each fixture keeps the `input` that produced it, so the numbers below can be reproduced rather
+than trusted. They are five shapes, not five calculations: a single VMC, varmin, emin, a DMC
+run split over many blocks, and a run that was killed. `examples/` is where breadth lives --
+this is where precision does.
+
+The heavier oracles live in tests/integration: the same parser against CASINO's own `envmc`,
+and against a freshly built CASINO. This suite is the part that runs anywhere, in a second.
 """
 
 import pytest
@@ -26,8 +31,8 @@ def test_single_vmc(out_file):
 
     result = parsed['result']
     assert result['phase'] == 0 and result['kind'] == 'vmc'
-    assert result['energy'] == {'value': -2.861829862553, 'error': 0.000659077167, 'line': 237}
-    assert parsed['cpu_time'] == {'value': 9.47, 'line': 245}
+    assert result['energy'] == {'value': -2.862098498845, 'error': 0.00026604262, 'line': 237}
+    assert parsed['cpu_time'] == {'value': 55.62, 'line': 245}
 
 
 def test_single_block_variance_error_is_derived_and_labelled(out_file):
@@ -36,7 +41,7 @@ def test_single_block_variance_error_is_derived_and_labelled(out_file):
     phase = parsed['phases'][0]
     assert phase['nblock'] == 1
     variance = phase['variance']
-    assert variance['value'] == 0.574561788453
+    assert variance['value'] == 0.555497740165
     assert variance['error'] == phase['blocks'][0]['variance']['error']
     assert variance['derived'] == 'error taken from the only block, as envmc does'
 
@@ -57,7 +62,7 @@ def test_vmc_opt_is_a_sequence_of_phases(out_file):
     assert [phase['index'] for phase in parsed['phases'] if phase['kind'] == 'opt'] == [1, 2]
     # `result` is the last phase carrying an energy: the post-fit VMC, not the optimization
     assert parsed['result']['phase'] == 4
-    assert parsed['result']['energy']['value'] == -0.500282762241
+    assert parsed['result']['energy']['value'] == -0.500095952582
 
 
 def test_varmin_reports_a_variance_and_no_energy(out_file):
@@ -65,7 +70,7 @@ def test_varmin_reports_a_variance_and_no_energy(out_file):
     parsed = parse_out(out_file('vmc_opt_varmin'))
     opt = parsed['phases'][1]
     assert opt['method']['value'] == 'varmin'
-    assert opt['variance'] == {'value': 0.0012217187, 'line': 486}
+    assert opt['variance'] == {'value': 0.0012031461, 'line': 494}
     assert opt['energy']['value'] is None
     assert opt['energy']['reason'] == 'optimization phase reports no final energy'
 
@@ -77,7 +82,7 @@ def test_emin_reports_both(out_file):
     assert methods == ['varmin', 'emin', 'emin', 'emin']
     emin = parsed['phases'][3]
     assert emin['method']['value'] == 'emin'
-    assert emin['energy']['value'] == pytest.approx(-0.5000971413222693)
+    assert emin['energy']['value'] == pytest.approx(-0.5001462292988536)
     assert emin['energy']['error'] is not None
     assert emin['variance']['value'] is not None
 
@@ -86,13 +91,26 @@ def test_dmc_phases_and_mixed_estimators(out_file):
     parsed = parse_out(out_file('vmc_dmc'))
     assert [phase['kind'] for phase in parsed['phases']] == ['vmc', 'dmc_equil', 'dmc_stats']
     stats = parsed['phases'][2]
-    assert stats['energy'] == {'value': -2753.72712628829, 'error': 0.010650491074, 'line': 502}
+    assert stats['energy'] == {'value': -14.657147024964, 'error': 0.000195923556, 'line': 780}
     assert stats['energy'] is stats['mixed_estimators']['total_energy']
     assert set(stats['mixed_estimators']) == {'total_energy', 'kinetic_ti', 'kinetic_kei', 'kinetic_fisq', 'ee_interaction', 'ei_interaction'}
-    assert stats['variance']['value'] == pytest.approx(141.302116774828)
+    assert stats['variance']['value'] == pytest.approx(0.055069434742)
     assert stats['time_step']['value'] is not None
     assert stats['target_weight']['value'] is not None
     assert parsed['result']['kind'] == 'dmc_stats'
+
+
+def test_every_dmc_block_is_kept_not_just_the_last(out_file):
+    """Both DMC phases are checkpointed, and a block is where a wandering population shows up."""
+    parsed = parse_out(out_file('vmc_dmc'))
+    equilibration, stats = parsed['phases'][1], parsed['phases'][2]
+    assert (equilibration['nblock'], stats['nblock']) == (2, 20)
+    assert [len(phase['blocks']) for phase in (equilibration, stats)] == [2, 20]
+
+    lines = [block['line'] for block in stats['blocks']]
+    assert lines == sorted(lines), 'blocks must come back in the order CASINO wrote them'
+    assert all(block['best_energy']['value'] is not None for block in stats['blocks'])
+    assert all(block['acceptance']['value'] is not None for block in stats['blocks'])
 
 
 def test_bad_reblock_convergence_is_reported_not_hidden(out_file):

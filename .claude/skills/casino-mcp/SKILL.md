@@ -291,9 +291,14 @@ pytest -m integration      # needs runqmc/envmc, but nothing outside this reposi
 The unit suite runs anywhere, including CI. What stands in for CASINO is a fake `runqmc`
 shell script (`fake_runqmc` in `tests/conftest.py`), which is enough to exercise the parts
 that are ours: the launcher, the process group, the exit code, the log file, the guardrails.
-The parser is checked against five real `out` files under `tests/data/` — one per shape:
-single VMC, varmin, emin, DMC, and an interrupted run — and, in `tests/test_examples.py`,
-against all 18 calculations in `examples/`.
+The parser is checked field by field against five real `out` files under `tests/data/` — one
+per shape: single VMC, varmin, emin, a DMC run split over 2 equilibration and 20 statistics
+blocks, and a run that was killed — and, in `tests/test_examples.py`, against all 18
+calculations in `examples/`. Each fixture keeps the `input` that produced it, so its asserted
+numbers can be reproduced rather than trusted; all but the interrupted one were regenerated on
+CASINO v3.1.24. `examples/` is where breadth lives, `tests/data/` is where precision does —
+the assertions there pin exact values *and line numbers*, which is how a claim made from a
+parsed number stays checkable against the file it came from.
 
 `examples/` is the tree the integration suites read, and it is deliberately in-repo: pip
 installing casino-mcp does not install PyCasino, so no test may point at its examples. The 18

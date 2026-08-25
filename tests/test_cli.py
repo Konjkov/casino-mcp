@@ -83,7 +83,7 @@ def test_parse_prints_a_structured_out_file(capsys, out_file):
     code, captured = run(capsys, 'parse', str(out_file('vmc_single')))
     parsed = json.loads(captured.out)
     assert code == 0
-    assert parsed['result']['energy']['value'] == -2.861829862553
+    assert parsed['result']['energy']['value'] == -2.862098498845
 
 
 def test_parse_accepts_a_directory(capsys, out_file):

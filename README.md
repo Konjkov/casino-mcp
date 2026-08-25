@@ -163,9 +163,10 @@ under a non-C locale.
 pytest                      # 141 tests, ~2 s, no CASINO needed
 ```
 
-The unit suite runs anywhere: the parser is checked against five real `out` files committed
-under `tests/data/` and against all eighteen calculations under `examples/`, and the launcher,
-the process group and the guardrails are exercised against a fake `runqmc` shell script.
+The unit suite runs anywhere: the parser is checked field by field against five real `out`
+files under `tests/data/` — each with the `input` that produced it — and over all eighteen
+calculations under `examples/`, while the launcher, the process group and the guardrails are
+exercised against a fake `runqmc` shell script.
 
 ```bash
 pytest -m integration

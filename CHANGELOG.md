@@ -27,6 +27,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The parser fixtures under `tests/data/` were regenerated on CASINO v3.1.24 and now each keep
+  the `input` that produced them, so their asserted values can be reproduced rather than
+  trusted. The DMC fixture moved from krypton to beryllium — 4 electrons instead of 36 — and
+  from a single statistics block to 2 equilibration and 20 statistics blocks, which is the
+  shape a wandering DMC population actually shows up in and which nothing was asserting
+  before. The interrupted fixture was left alone; it was already v3.1.24, and a run that was
+  killed cannot be reproduced by running.
 - The integration suite reads `examples/` and nothing else: `--examples-dir`, `$CASINO_EXAMPLES`
   and the dependency on a PyCasino checkout are gone. Installing casino-mcp does not install
   PyCasino, so `pytest -m integration` now needs only CASINO itself.

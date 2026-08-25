@@ -4,7 +4,7 @@
 include CHANGELOG.md
 include tests/conftest.py
 recursive-include tests *.py
-recursive-include tests/data out
+recursive-include tests/data input out
 include examples/README.md
 recursive-include examples input out *.data *.casl
 include tools/protocol_dump.py

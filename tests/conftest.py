@@ -45,7 +45,7 @@ def isolated(request, tmp_path, monkeypatch):
 
 @pytest.fixture
 def out_file():
-    """A fixture `out` by name: tests/data/<name>/out, straight from CASINO's examples."""
+    """A fixture `out` by name: tests/data/<name>/out, with the `input` that produced it."""
 
     def get(name: str) -> Path:
         path = DATA / name / 'out'
