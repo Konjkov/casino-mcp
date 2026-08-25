@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'casino-mcp'
-version = '0.1.0'
+version = '0.2.0'
 description = 'An MCP control plane over the Fortran CASINO quantum Monte Carlo code'
 authors = [
     {name = 'Vladimir Konkov', email = 'Konjkov.VV@gmail.com'},
@@ -17,7 +17,7 @@ license = 'MIT'
 license-files = ['LICENSE']
 keywords = ['mcp', 'casino', 'quantum monte carlo', 'qmc', 'claude']
 classifiers = [
-    'Development Status :: 3 - Alpha',
+    'Development Status :: 4 - Beta',
     'Environment :: Console',
     'Intended Audience :: Science/Research',
     'Operating System :: POSIX :: Linux',

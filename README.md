@@ -9,8 +9,9 @@ An MCP control plane over the Fortran [CASINO](https://vallico.net/casinoqmc/) q
 Carlo code: start runs, know what is running, stop them, and read an `out` file as structured
 data instead of shipping 4000 lines of text into a model's context.
 
-> **Alpha (0.1.0).** The four control tools and the `out` parser are done and tested; the
-> tool that returns physics to the model is not shipped yet. Interfaces may still move.
+> **Beta (0.2.0).** The four control tools and the `out` parser are done and tested against a
+> real CASINO; the tool that returns physics to the model is not shipped yet. Interfaces may
+> still move before 1.0.
 
 ## What it is, and what it is not
 

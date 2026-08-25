@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-25
+
+The test data became a check on CASINO rather than a record of it. Nothing in the tool surface
+changed; what changed is that every calculation the suite reads now lives in this repository,
+runs in minutes, and can be re-run against a newly built CASINO to see whether the output
+format moved under the parser.
+
 ### Added
 
 - `examples/`: eighteen real CASINO calculations committed with the `out` files they produced,
@@ -76,5 +83,6 @@ to the model are not shipped yet.
 - Nothing shells out to `envmc`/`endmc` at runtime; `endmc` misparses numbers under a non-C
   locale.
 
-[Unreleased]: https://github.com/Konjkov/casino-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Konjkov/casino-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Konjkov/casino-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Konjkov/casino-mcp/releases/tag/v0.1.0
