@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
-## [Unreleased]
+## [0.2.0] — 2026-08-26
+
+Two things, one release. Stopping a calculation and continuing it now go through CASINO’s
+own scripts — `haltqmc` and `runqmc` — instead of through signals and file moves of this
+layer’s own devising. And the test data became a check on CASINO rather than a record of it:
+every calculation the suite reads now lives in this repository, runs in minutes, and can be
+re-run against a newly built CASINO to see whether the output format moved under the parser.
 
 ### Added
 
@@ -18,6 +24,22 @@ All notable changes to this project are documented here. The format follows
 - `CASINO_HALTQMC`, alongside `CASINO_RUNQMC`: an explicit path to `haltqmc`, otherwise `PATH`,
   then `$CASINO_HOME/bin_qmc/haltqmc`. `casino-mcp config` reports it and says when it is
   missing — a job can still be stopped without it, but its directory will not be tidied.
+- `examples/`: eighteen real CASINO calculations committed with the `out` files they produced,
+  and enough of their inputs to be re-run. They are a settings cover, not a sample — chosen out
+  of PyCasino's 526 so that every runtype, basis type, sampling method, optimiser and
+  wavefunction option appears at least once, at the smallest total size that achieves it,
+  together with a run that never printed an energy and one interrupted mid-optimisation.
+- `tests/test_examples.py`: the tree parses, and it still covers every setting it was
+  assembled to cover. Runs without CASINO, so a calculation cannot be dropped from `examples/`
+  without the suite naming the setting that went with it.
+- `tools/refresh_examples.py` and `tests/integration/test_examples_rerun.py`: the tree is
+  re-run against the installed CASINO and compared with what was committed. The test asserts
+  only that no phase, keyword or number `parse_out` reads has disappeared, which is what a
+  changed output format looks like from a parser's side. Moved values are reported, never
+  asserted: a new release may legitimately produce different numbers, and `random_seed` does
+  not pin an optimisation run anyway — it redistributes configurations across MPI processes and
+  lands somewhere slightly different each time. Efficiency is excluded from the comparison
+  entirely, being computed from a measured time that rounds to zero on a short block.
 
 ### Changed
 
@@ -46,35 +68,6 @@ All notable changes to this project are documented here. The format follows
   pseudopotentials and a `correlation.data` that is usually hand-edited. The reply carries
   `removed`, the names that went. Nothing is deleted until every check that could refuse the
   run has passed.
-
-## [0.2.0] — 2026-08-25
-
-The test data became a check on CASINO rather than a record of it. Nothing in the tool surface
-changed; what changed is that every calculation the suite reads now lives in this repository,
-runs in minutes, and can be re-run against a newly built CASINO to see whether the output
-format moved under the parser.
-
-### Added
-
-- `examples/`: eighteen real CASINO calculations committed with the `out` files they produced,
-  and enough of their inputs to be re-run. They are a settings cover, not a sample — chosen out
-  of PyCasino's 526 so that every runtype, basis type, sampling method, optimiser and
-  wavefunction option appears at least once, at the smallest total size that achieves it,
-  together with a run that never printed an energy and one interrupted mid-optimisation.
-- `tests/test_examples.py`: the tree parses, and it still covers every setting it was
-  assembled to cover. Runs without CASINO, so a calculation cannot be dropped from `examples/`
-  without the suite naming the setting that went with it.
-- `tools/refresh_examples.py` and `tests/integration/test_examples_rerun.py`: the tree is
-  re-run against the installed CASINO and compared with what was committed. The test asserts
-  only that no phase, keyword or number `parse_out` reads has disappeared, which is what a
-  changed output format looks like from a parser's side. Moved values are reported, never
-  asserted: a new release may legitimately produce different numbers, and `random_seed` does
-  not pin an optimisation run anyway — it redistributes configurations across MPI processes and
-  lands somewhere slightly different each time. Efficiency is excluded from the comparison
-  entirely, being computed from a measured time that rounds to zero on a short block.
-
-### Changed
-
 - The parser fixtures under `tests/data/` were regenerated on CASINO v3.1.24 and now each keep
   the `input` that produced them, so their asserted values can be reproduced rather than
   trusted. The DMC fixture moved from krypton to beryllium — 4 electrons instead of 36 — and
