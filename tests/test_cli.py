@@ -107,10 +107,19 @@ def test_run_refuses_and_exits_nonzero(capsys, tmp_path):
 def test_run_forwards_its_flags(monkeypatch, capsys, workdir):
     seen = {}
     monkeypatch.setattr(cli.runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {'job_id': 'x'})
-    code, _ = run(capsys, 'run', str(workdir), '-p', '4', '--version', 'debug', '--overwrite', '--unlock')
+    code, _ = run(capsys, 'run', str(workdir), '-p', '4', '--version', 'debug', '--restart', '--unlock')
 
     assert code == 0
-    assert seen == {'workdir': str(workdir), 'nproc': 4, 'version': 'debug', 'overwrite': True, 'unlock': True}
+    assert seen == {'workdir': str(workdir), 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True}
+
+
+def test_continue_is_spelled_the_way_runqmc_spells_it(monkeypatch, capsys, workdir):
+    """`continue` cannot be a Python identifier; on the command line it can still be the flag."""
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {'job_id': 'x'})
+    run(capsys, 'run', str(workdir), '--continue')
+
+    assert seen['resume'] is True and seen['restart'] is False
 
 
 def test_stop_forwards_its_timeout(monkeypatch, capsys):

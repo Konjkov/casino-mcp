@@ -22,7 +22,8 @@ def casino_run(
     workdir: str,
     nproc: int = settings.NPROC,
     version: str = settings.VERSION,
-    overwrite: bool = False,
+    restart: bool = False,
+    resume: bool = False,
     unlock: bool = False,
 ) -> dict[str, Any]:
     """Start a CASINO calculation in workdir and return immediately.
@@ -31,13 +32,28 @@ def casino_run(
     this tool only decides how the binary is launched. The calculation keeps running
     after the call returns and after this server is restarted.
 
+    A directory that already holds an `out` is refused, because runqmc appends to it and
+    the result is two runs in one file. `restart` and `resume` are the two ways past that,
+    and they are opposites -- pass one.
+
     workdir: directory holding `input` and the wave function files.
     nproc: number of MPI processes (`vmc_nstep` in `input` is the total over all of them).
     version: binary flavour, 'opt' or 'debug'.
-    overwrite: allow running in a directory that already holds an `out` file.
+    restart: delete `out` and everything else the earlier run left -- `.hist` files, configs,
+        optimisation output -- and start the calculation over. Inputs are kept. Destructive:
+        `config.in` goes too, so what could have been continued no longer can be. Refused on a
+        directory whose `input` haltqmc has set up to continue (NEWRUN : F), because CASINO
+        then wants the `config.in` this would delete; casino_stop keeps a copy of the input as
+        it was, and the reply to the stop says where.
+    resume: carry the interrupted run on, keeping the work already done. Which of CASINO's
+        two continuation routes that takes is read out of `out`, not chosen here: a run that
+        CASINO stopped on max_cpu_time / max_real_time is continued by `runqmc --continue`,
+        and a run that casino_stop halted is continued by a plain `runqmc` over the `input`
+        that `haltqmc -u` rewrote. The reply says which one under `resume`. A run that
+        reached its own end is refused -- there is nothing to continue.
     unlock: clear a stale .runqmc.lock left by a runqmc instance that died.
     """
-    return runtime.start(workdir, nproc=nproc, version=version, overwrite=overwrite, unlock=unlock)
+    return runtime.start(workdir, nproc=nproc, version=version, restart=restart, resume=resume, unlock=unlock)
 
 
 @server.tool()
@@ -54,13 +70,16 @@ def casino_list_jobs(limit: int = 20) -> dict[str, Any]:
 
 @server.tool()
 def casino_stop(job_id: str, timeout: float = settings.STOP_TIMEOUT) -> dict[str, Any]:
-    """Stop a running calculation.
+    """Stop a running calculation and leave its directory ready to be continued.
 
-    Signals the whole process tree (launcher, runqmc, mpirun, casino). CASINO has no
-    graceful-halt signal, so whatever blocks it had finished stay in `out`, `vmc.hist`
-    and `dmc.hist`, and the current block is lost. The stale lock file is cleared.
+    SIGTERM goes to this job's `casino` processes, as `haltqmc -k` does for the whole
+    account, so `runqmc` stays alive to finish writing `out`. CASINO has no graceful-halt
+    signal: the blocks it had finished stay in `out`, `vmc.hist` and `dmc.hist`, the
+    current block is lost. Then `haltqmc -f -u` tidies the directory -- config.out to
+    config.in, the lock file, and `input` rewritten for the work that is left -- so
+    casino_run(workdir, resume=true) carries this calculation on.
 
-    timeout: seconds to wait after SIGTERM before SIGKILL.
+    timeout: seconds the job gets to end on its own before the process group is killed.
     """
     return runtime.stop(job_id, timeout=timeout)
 

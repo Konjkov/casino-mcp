@@ -123,6 +123,18 @@ class JobStore:
     def meta(self, job_id: str):
         return read_json(jobs_dir() / job_id / 'meta.json')
 
+    def mark_stopped(self, job_id: str) -> None:
+        """Record that this job was stopped on purpose.
+
+        The exit code cannot say it: a job is stopped by signalling CASINO itself, and the
+        `runqmc` that outlives it exits however it likes once its calculation has gone.
+        """
+        meta = self.meta(job_id)
+        if meta is None:
+            raise KeyError(job_id)
+        meta['stopped'] = now()
+        write_json(jobs_dir() / job_id / 'meta.json', meta)
+
     def status(self, job_id: str) -> dict:
         """Current state of a job, from the launcher's status file or from /proc."""
         meta = self.meta(job_id)
@@ -156,6 +168,9 @@ class JobStore:
             state['runtime'] = round(finished['finished_epoch'] - meta['created_epoch'], 1)
             if finished.get('signalled'):
                 state['status'] = 'stopped'
+        if meta.get('stopped') and state['status'] != 'running':
+            state['status'] = 'stopped'
+            state['stopped'] = meta['stopped']
         state['runqmc_log'] = str(job_dir / 'runqmc.log')
         return state
 

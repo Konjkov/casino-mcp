@@ -7,8 +7,10 @@ description: >
   process + JSON job registry under XDG state, never inside the calculation directory), the
   tool surface (casino_run / casino_status / casino_stop / casino_list_jobs, later
   casino_results), the guardrails that stop a run from overwriting committed reference data
-  in examples/, why the PID that matters is the launcher's process group and not runqmc's,
-  and the staged plan with what was accepted and what was rejected from the original
+  in examples/, why stopping and continuing a run go through haltqmc and runqmc rather than
+  through signals and file moves of our own, why the pid that matters is the launcher's
+  session and not runqmc's, and the staged plan with what was accepted and what was rejected
+  from the original
   proposal. Trigger on: MCP, casino-mcp, mcp server, job manager, job id, casino_run,
   .mcp.json, FastMCP/MCPServer. See casino-run for how CASINO itself is driven and what its
   output files contain.
@@ -28,12 +30,12 @@ src/casino_mcp/
     settings.py    where CASINO is, where our state goes: the environment, and constants
     parse_out.py   CASINO `out` -> structured phases (no MCP, no dependencies)
     jobs.py        job registry, state dir, process liveness
-    runtime.py     start / status / stop over runqmc. No MCP in this module
+    runtime.py     start / status / stop over runqmc and haltqmc. No MCP in this module
     server.py      MCPServer + tool definitions. A thin wrapper over runtime
     launcher.py    the child process that actually waits on runqmc
     cli.py         `casino-mcp serve | config | run | status | stop | jobs | parse`
 examples/          18 real calculations, a settings cover. The only tree the tests read
-tests/             141 unit tests, no CASINO needed; tests/integration is opt-in
+tests/             158 unit tests, no CASINO needed; tests/integration is opt-in
 tools/protocol_dump.py     the JSON-RPC by hand, no SDK. Read before adding a tool
 .mcp.json          registration for Claude Code (project scope)
 ```
@@ -78,7 +80,9 @@ with it:
 2. **PID is the wrong handle.** `runqmc` is a 3900-line bash script that execs
    `mpirun -np N casino`. The PID of the thing we spawn controls nothing on its own —
    `SIGTERM` to it orphans mpirun and casino. The server spawns a *launcher* in its own
-   session (`start_new_session=True`), so `killpg` reaches the whole tree, and the launcher
+   session (`start_new_session=True`), which is what makes the tree addressable — `killpg`
+   reaches runqmc and mpirun, and the session id finds the ranks mpirun put in process groups
+   of their own, which is how a stop signals `casino` and nothing else — and the launcher
    records the exit status to disk. `casino_status` therefore reports the truth after an
    MCP restart, which polling a bare PID cannot (PID reuse is guarded by comparing
    `/proc/<pid>` start time).
@@ -136,6 +140,7 @@ jobs.json              index: job_id -> record
 jobs/<job_id>/meta.json      what was launched (frozen at spawn)
 jobs/<job_id>/status.json    written by the launcher when the run ends
 jobs/<job_id>/runqmc.log     stdout/stderr of runqmc itself (not CASINO's `out`)
+jobs/<job_id>/input.before_halt   the input as it was, when a stop had haltqmc rewrite it
 ```
 
 The calculation directory only ever gets what CASINO puts there. That keeps
@@ -143,9 +148,16 @@ The calculation directory only ever gets what CASINO puts there. That keeps
 copy of the tree.
 
 **Why a launcher process.** Three properties fall out of it and none are available
-otherwise: an exit code that survives the server dying, a process group that can be killed
-as a unit, and a `runqmc.log` that is not interleaved with the MCP stdio stream (writing to
-stdout would corrupt the protocol — the single most common way to break a stdio MCP server).
+otherwise: an exit code that survives the server dying, a session of its own that makes the
+whole tree identifiable, and a `runqmc.log` that is not interleaved with the MCP stdio stream
+(writing to stdout would corrupt the protocol — the single most common way to break a stdio
+MCP server).
+
+**The process group is not the tree.** `killpg` reaches runqmc and mpirun, and stops there:
+mpirun puts every rank in a process group of its own. What the ranks do share is the
+launcher's *session*, so `runtime.casino_processes(sid)` walks `/proc` for processes named
+`casino` whose session id is the launcher's pid. That is the set `haltqmc -k` would have
+pkilled account-wide.
 
 **Liveness.** `os.kill(pid, 0)` plus a start-time check against `/proc/<pid>/stat` field 22.
 Without the second, a recycled PID reports a finished job as running.
@@ -158,12 +170,45 @@ Stage 1 (implemented):
 
 | tool | returns |
 | --- | --- |
-| `casino_run(workdir, nproc, …)` | job_id, pid, workdir, command, started |
+| `casino_run(workdir, nproc, restart, resume, unlock)` | job_id, pid, workdir, command, started, removed |
 | `casino_status(job_id)` | running/finished/failed, pid, runtime, exit code |
-| `casino_stop(job_id)` | what was signalled, final status |
+| `casino_stop(job_id)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs()` | every known job, newest first |
 
 Deliberately *not* implemented yet: anything that reads physics out of `out`.
+
+**A dirty directory has two exits, not one.** `runqmc` appends to `out` and to the `.hist`
+files, so a permission to start in a directory that already holds them is not enough — the
+first version of this shipped `overwrite=true`, which lifted the refusal and deleted nothing,
+and the result was an `out` holding two runs. What a caller actually wants is one of two
+things, and they are opposites: `restart=true` deletes the earlier run's products (a named
+list in `runtime.DEBRIS` — never inputs, never `parameters.casl`, and only after the last
+check that could refuse the run has passed) and starts over; `resume=true` keeps the work.
+The MCP parameter is `resume` because `continue` is a Python keyword; the CLI accepts both.
+
+**Only CASINO's own scripts change a calculation's state.** `runqmc` starts, `haltqmc` ends
+and tidies, and a stopped run is carried on by one of two routes — which is not a choice, it
+is a fact about how the run ended, read out of `out` by `runtime.resume_mode`:
+
+- `CONTINUATION INFO:` in the last run in `out` → `runqmc --continue`. CASINO writes that
+  block *only* on an emergency stop against `max_cpu_time` / `max_real_time`
+  (`run_control.f90:exceeds_time_limit`), and runqmc's `setup_continuation` errstops without
+  it. It then archives the finished segment into `saved_part_N/` and edits `input` itself.
+- no such block → a plain `runqmc` over the `input` that `haltqmc -u` rewrote. This is the
+  route an interrupted run takes: `haltqmc_update_input` sets `newrun : F`, subtracts the
+  blocks already done from `vmc_nstep`/`vmc_nblock`, and moves the runtype on to the next
+  stage (`vmc_dmc` → `dmc_dmc` → `dmc_stats`); `tidy_files` has already moved `config.out` to
+  `config.in`. `out` is kept and appended to, so a continued calculation holds several CASINO
+  runs in one file — hence `last_run()`, which is what `resume_mode` reads.
+- the last run reached `Total CASINO CPU time` → refused, there is nothing to continue.
+
+The cost of that rewrite: after a stop, `input` says `newrun : F`, and `restart=true` would
+delete the `config.in` CASINO then demands ("File config.in required for RUNTYPE=vmc when
+NEWRUN=F"). So a stop copies `input` into the job directory first, and `restart` on such a
+directory is refused, naming the copy. haltqmc also has two failure modes worth knowing:
+`-u` errstops unless `haltqmc_update_input` is on `PATH` (so `halt()` puts haltqmc's own
+directory there), and `get_runtype` errstops with "Cannot determine runtype" when `out`
+exists but is too short to hold the `RUNTYPE` line — a run killed within its first second.
 
 ---
 
@@ -265,7 +310,7 @@ it is a second home for the same three values: a search order, a merge, and type
 `$CASINO_ARCH` are CASINO's own variables, known to `runqmc` — setting them configures both
 layers at once, and a private file would let the two disagree.
 
-What is read: `CASINO_HOME`, `CASINO_ARCH`, `CASINO_RUNQMC`, `CASINO_MCP_STATE_DIR`,
+What is read: `CASINO_HOME`, `CASINO_ARCH`, `CASINO_RUNQMC`, `CASINO_HALTQMC`, `CASINO_MCP_STATE_DIR`,
 `CASINO_MCP_FORBID` (`:`-separated like `PATH`). Everything else is a constant in
 `settings.py`. Two rules when adding one:
 

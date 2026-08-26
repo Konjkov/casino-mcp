@@ -34,16 +34,28 @@ def cmd_serve(args) -> int:
 def cmd_config(args) -> int:
     """What the server would use right now. The first thing to run when a tool call refuses."""
     runqmc = runtime.find_runqmc()
+    haltqmc = runtime.find_haltqmc()
     resolved = settings.resolved()
     if not any(resolved['environment'].values()):
         print('# no CASINO_* variable is set; these are the defaults', file=sys.stderr)
     if runqmc is None:
         print('# runqmc not found: set CASINO_HOME or CASINO_RUNQMC, or put it on PATH', file=sys.stderr)
-    return emit({**resolved, 'runqmc': runqmc})
+    if haltqmc is None:
+        print('# haltqmc not found: a job can be stopped, but its directory will not be tidied', file=sys.stderr)
+    return emit({**resolved, 'runqmc': runqmc, 'haltqmc': haltqmc})
 
 
 def cmd_run(args) -> int:
-    return emit(runtime.start(args.workdir, nproc=args.nproc, version=args.version, overwrite=args.overwrite, unlock=args.unlock))
+    return emit(
+        runtime.start(
+            args.workdir,
+            nproc=args.nproc,
+            version=args.version,
+            restart=args.restart,
+            resume=args.resume,
+            unlock=args.unlock,
+        )
+    )
 
 
 def cmd_status(args) -> int:
@@ -83,7 +95,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument('workdir')
     run.add_argument('-p', '--nproc', type=int, default=settings.NPROC, help='MPI processes (default: %(default)s)')
     run.add_argument('--version', dest='version', default=settings.VERSION, help='binary flavour (default: %(default)s)')
-    run.add_argument('--overwrite', action='store_true', help='allow a directory that already holds an `out`')
+    run.add_argument('--restart', action='store_true', help='delete `out` and the rest of what an earlier run left, then start over')
+    # `--continue` is the name runqmc uses; `continue` cannot be a Python identifier, so the
+    # argument this sets, and the tool parameter, are both `resume`.
+    run.add_argument(
+        '--resume',
+        '--continue',
+        dest='resume',
+        action='store_true',
+        help='carry on an interrupted run: `runqmc --continue`, or a plain runqmc over the input haltqmc updated',
+    )
     run.add_argument('--unlock', action='store_true', help='clear a stale .runqmc.lock')
     run.set_defaults(func=cmd_run)
 
@@ -95,9 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument('-n', '--limit', type=int, default=20)
     listing.set_defaults(func=cmd_jobs)
 
-    stop = sub.add_parser('stop', help='signal a running job and clear its lock')
+    stop = sub.add_parser('stop', help='stop a running job and hand its directory to haltqmc')
     stop.add_argument('job_id')
-    stop.add_argument('--timeout', type=float, default=settings.STOP_TIMEOUT, help='seconds before SIGKILL (default: %(default)s)')
+    stop.add_argument('--timeout', type=float, default=settings.STOP_TIMEOUT, help='seconds before the group is killed (default: %(default)s)')
     stop.set_defaults(func=cmd_stop)
 
     parse = sub.add_parser('parse', help='a CASINO `out` file as JSON')

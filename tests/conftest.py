@@ -16,8 +16,18 @@ from pathlib import Path
 
 import pytest
 
+from casino_mcp import runtime
+
 DATA = Path(__file__).resolve().parent / 'data'
-READ_ENV = ('CASINO_HOME', 'CASINO_ARCH', 'CASINO_RUNQMC', 'CASINO_MCP_STATE_DIR', 'CASINO_MCP_FORBID', 'XDG_STATE_HOME')
+READ_ENV = (
+    'CASINO_HOME',
+    'CASINO_ARCH',
+    'CASINO_RUNQMC',
+    'CASINO_HALTQMC',
+    'CASINO_MCP_STATE_DIR',
+    'CASINO_MCP_FORBID',
+    'XDG_STATE_HOME',
+)
 
 # The calculations the integration suite reads. They live in this repository and nowhere else:
 # installing casino-mcp does not install PyCasino, so nothing here may point at its examples.
@@ -38,6 +48,9 @@ def isolated(request, tmp_path, monkeypatch):
         for name in READ_ENV:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
+        # Clearing the variables is not enough for haltqmc: a developer with CASINO on PATH
+        # would have `stop` run the real script over a tmp_path. `fake_haltqmc` puts one back.
+        monkeypatch.setattr(runtime, 'find_haltqmc', lambda: None)
     else:
         monkeypatch.setenv('CASINO_MCP_STATE_DIR', str(tmp_path / 'state' / 'casino-mcp'))
     monkeypatch.chdir(tmp_path)
@@ -86,6 +99,44 @@ def fake_runqmc(tmp_path, monkeypatch):
         )
         script.chmod(script.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv('CASINO_RUNQMC', str(script))
+        return script
+
+    return build
+
+
+@pytest.fixture
+def fake_haltqmc(tmp_path, monkeypatch):
+    """A stand-in for haltqmc, installed as $CASINO_HALTQMC, with its helper beside it.
+
+    It lives in a directory of its own, because what `-u` needs is `haltqmc_update_input` on
+    PATH -- the real script looks it up there and errstops without it -- and a test has to be
+    able to take that away. It records the flags it was given and does the part of the real
+    script the tests care about: the lock file goes and config.out becomes config.in.
+    """
+
+    def build(exit_code: int = 0, helper: bool = True) -> Path:
+        bindir = tmp_path / 'casino-bin'
+        bindir.mkdir(exist_ok=True)
+        script = bindir / 'haltqmc'
+        script.write_text(
+            '#!/bin/sh\n'
+            'printf %s "$*" > haltqmc.args\n'
+            'command -v haltqmc_update_input > haltqmc.helper\n'
+            'rm -f .runqmc.lock\n'
+            'if [ -s config.out ] ; then mv config.out config.in ; fi\n'
+            f'exit {exit_code}\n'
+        )
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        if helper:
+            update = bindir / 'haltqmc_update_input'
+            update.write_text('#!/bin/sh\nexit 0\n')
+            update.chmod(update.stat().st_mode | stat.S_IXUSR)
+        else:
+            # a developer with CASINO on PATH would otherwise supply the helper this asks to do without
+            kept = [entry for entry in os.environ.get('PATH', '').split(os.pathsep) if entry and not (Path(entry) / 'haltqmc_update_input').exists()]
+            monkeypatch.setenv('PATH', os.pathsep.join(kept))
+        monkeypatch.setenv('CASINO_HALTQMC', str(script))
+        monkeypatch.setattr(runtime, 'find_haltqmc', lambda: str(script))
         return script
 
     return build

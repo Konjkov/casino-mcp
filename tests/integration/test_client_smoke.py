@@ -77,7 +77,7 @@ async def test_the_advertised_tools_are_the_four(example):
 
     assert {tool.name for tool in listed.tools} == {'casino_run', 'casino_status', 'casino_stop', 'casino_list_jobs'}
     run = next(tool for tool in listed.tools if tool.name == 'casino_run')
-    assert set(run.input_schema['properties']) == {'workdir', 'nproc', 'version', 'overwrite', 'unlock'}
+    assert set(run.input_schema['properties']) == {'workdir', 'nproc', 'version', 'restart', 'resume', 'unlock'}
     assert run.input_schema['required'] == ['workdir']
 
 
@@ -117,6 +117,45 @@ async def test_a_long_run_can_be_stopped_and_leaves_no_lock(prepare):
 
     assert stopped['status'] == 'stopped'
     assert not (scratch / '.runqmc.lock').exists()
+    # only the ranks were signalled, so runqmc lived to finish writing `out`
+    assert stopped['terminated']['scope'] == 'casino'
+    assert stopped['halt']['exit_code'] == 0, stopped['halt']
+
+
+async def test_a_stopped_run_is_continued_by_the_route_casino_left_open(prepare):
+    """The whole cycle against the real scripts: runqmc, then haltqmc -f -u, then runqmc again.
+
+    A run interrupted by hand has no continuation info in `out` -- CASINO writes that only
+    against a time limit -- so what continues it is the `input` haltqmc rewrote, and the second
+    run has to end up in the same `out` as the first.
+    """
+    scratch = prepare('halted', nstep=4000000, nblock=4)
+    async with mcp_session() as session:
+        started = await call(session, 'casino_run', workdir=str(scratch), nproc=2)
+        for _ in range(60):  # stop it once a block is behind it, which is what makes it continuable
+            await asyncio.sleep(2)
+            if 'Time taken in block' in (scratch / 'out').read_text(errors='replace'):
+                break
+        stopped = await call(session, 'casino_stop', job_id=started['job_id'])
+        assert stopped['halt']['updated_input'] is True, stopped['halt']
+        assert (scratch / 'config.in').is_file()  # haltqmc moved config.out here
+        assert 'newrun            : F' in (scratch / 'input').read_text()
+
+        resumed = await call(session, 'casino_run', workdir=str(scratch), nproc=2, resume=True)
+        assert resumed['resume'] == 'halted', resumed
+        assert '--continue' not in resumed['command']
+
+        state = resumed
+        for _ in range(120):
+            state = await call(session, 'casino_status', job_id=resumed['job_id'])
+            if state['status'] != 'running':
+                break
+            await asyncio.sleep(2)
+
+    assert state['status'] == 'finished', state
+    out = (scratch / 'out').read_text(errors='replace')
+    assert out.count(' Started ') == 2  # both runs in one file, which is how CASINO continues
+    assert 'Total CASINO CPU time' in out
 
 
 async def test_a_job_outlives_the_server_that_started_it(prepare):

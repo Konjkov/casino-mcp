@@ -5,12 +5,22 @@ group. They need no CASINO, because what they exercise is ours: the process grou
 code that outlives the caller, the log file, and the lock that must be cleared after a stop.
 """
 
+import os
+import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
 from casino_mcp import jobs, runtime, settings
+
+# The three ways a CASINO run can end, as `out` records them. Only the markers matter here:
+# `Started` opens every run in the file, and the other two lines say how the last one ended.
+STARTED = ' Started 2026/08/25 13:48:02.391\n\n Running in parallel using 4 MPI processes.\n'
+COMPLETED = STARTED + ' Total CASINO CPU time  : : :       21.3400 s\n Ends 2026/08/25 13:48:23.731\n'
+INTERRUPTED = STARTED + ' VMC #  1\n Acceptance ratio         (%)  =  50.9\n'
+TIME_LIMITED = STARTED + ' CONTINUATION INFO:\n  Suggested action: continue run directly\n  Set NEWRUN : F\n'
 
 
 def wait_for(predicate, timeout=30.0, interval=0.1):
@@ -69,6 +79,11 @@ def test_command_names_a_non_default_version_and_unlock():
     assert command == ['/bin/runqmc', '-p', '2', '--version=debug', '--unlock']
 
 
+def test_resume_is_runqmcs_own_continuation():
+    """Continuing is runqmc's job -- ours is to ask for it and get out of the way."""
+    assert runtime.build_command('/bin/runqmc', 1, 'opt', unlock=False, resume=True) == ['/bin/runqmc', '-p', '1', '--continue']
+
+
 # --- refusals ------------------------------------------------------------------------
 
 
@@ -84,7 +99,8 @@ def test_refuses_a_directory_without_an_input_file(tmp_path):
 def test_refuses_an_existing_out_and_says_how_to_proceed(workdir):
     (workdir / 'out').write_text('an earlier run\n')
     error = runtime.start(str(workdir))['error']
-    assert 'earlier run' in error and 'overwrite=true' in error
+    assert 'appends' in error
+    assert 'restart=true' in error and 'resume=true' in error
 
 
 def test_refuses_a_locked_directory(workdir):
@@ -110,18 +126,120 @@ def test_refuses_committed_reference_data_harder(workdir):
 
 
 def test_forbidden_directory_cannot_be_overridden(workdir, monkeypatch, fake_runqmc):
-    """`overwrite` and `unlock` unlock the other two guards. This one has no key at all."""
+    """`restart` and `unlock` unlock the other two guards. This one has no key at all."""
     fake_runqmc()
     monkeypatch.setenv('CASINO_MCP_FORBID', str(workdir.parent))
 
-    error = runtime.start(str(workdir), overwrite=True, unlock=True)['error']
+    error = runtime.start(str(workdir), restart=True, unlock=True)['error']
     assert 'CASINO_MCP_FORBID' in error and 'No override exists' in error
 
 
-def test_overwrite_unlocks_an_existing_out(workdir, fake_runqmc, python_path):
+def test_restart_and_resume_are_opposites(workdir, fake_runqmc):
     fake_runqmc()
     (workdir / 'out').write_text('an earlier run\n')
-    assert 'job_id' in runtime.start(str(workdir), overwrite=True)
+    assert 'opposites' in runtime.start(str(workdir), restart=True, resume=True)['error']
+
+
+def test_resume_needs_the_output_it_would_continue_from(workdir, fake_runqmc):
+    fake_runqmc()
+    error = runtime.start(str(workdir), resume=True)['error']
+    assert 'no `out`' in error and 'continuation info' in error
+
+
+def test_resume_starts_on_an_existing_out_and_keeps_it(workdir, fake_runqmc, python_path):
+    fake_runqmc(sleep=0.5)
+    (workdir / 'out').write_text(TIME_LIMITED)
+    (workdir / 'config.in').write_text('configurations\n')
+
+    started = runtime.start(str(workdir), resume=True)
+    assert started['command'].endswith('--continue')
+    assert started['resume'] == 'continue'
+    assert started['removed'] == []
+    assert (workdir / 'config.in').is_file()  # the very thing being continued from
+
+
+def test_resume_after_a_halt_is_a_plain_runqmc_over_the_updated_input(workdir, fake_runqmc, python_path):
+    """A killed run has no continuation info; what continues it is the input haltqmc rewrote."""
+    fake_runqmc(sleep=0.5)
+    (workdir / 'out').write_text(INTERRUPTED)
+
+    started = runtime.start(str(workdir), resume=True)
+    assert '--continue' not in started['command']
+    assert started['resume'] == 'halted'
+    assert 'haltqmc -u' in started['note']
+
+
+def test_resume_refuses_a_run_that_reached_its_own_end(workdir, fake_runqmc):
+    fake_runqmc()
+    (workdir / 'out').write_text(COMPLETED)
+
+    error = runtime.start(str(workdir), resume=True)['error']
+    assert 'nothing to continue' in error and 'restart=true' in error
+
+
+def test_only_the_last_run_in_out_decides_how_to_continue(workdir, fake_runqmc, python_path):
+    """Continuing appends, so a directory that was continued once holds several runs."""
+    fake_runqmc(sleep=0.5)
+    (workdir / 'out').write_text(COMPLETED + INTERRUPTED)
+
+    assert runtime.resume_mode(workdir / 'out') == 'halted'
+    assert '--continue' not in runtime.start(str(workdir), resume=True)['command']
+
+
+def test_restart_deletes_what_the_earlier_run_left_and_nothing_else(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    debris = (
+        'out',
+        'out_part.1',
+        '.out_proc0',
+        'vmc.hist',
+        'dmc.hist',
+        'vmc.hist.2',
+        'config.in',
+        'config.out_fixed',
+        'correlation.out.3',
+        'parameters.4.casl',
+    )
+    inputs = ('input', 'gwfn.data', 'correlation.data', 'parameters.casl')
+    for name in debris + inputs:
+        (workdir / name).write_text(name)
+    (workdir / 'saved_part_1').mkdir()
+    (workdir / 'saved_part_1' / 'input_orig').write_text('an earlier input')
+
+    started = runtime.start(str(workdir), restart=True)
+
+    assert 'job_id' in started
+    assert sorted(started['removed']) == sorted(debris + ('saved_part_1',))
+    assert not (workdir / 'saved_part_1').exists()
+    assert all((workdir / name).is_file() for name in inputs)
+
+
+def test_restart_refuses_an_input_that_is_set_up_to_continue(workdir, fake_runqmc):
+    """CASINO wants the config.in that restarting deletes, so it would fail on NEWRUN : F."""
+    fake_runqmc()
+    (workdir / 'input').write_text('runtype : vmc\nnewrun  : F   #*! New run or continue old\n')
+    (workdir / 'out').write_text(INTERRUPTED)
+
+    error = runtime.start(str(workdir), restart=True)['error']
+    assert 'NEWRUN : F' in error and 'resume=true' in error
+    assert (workdir / 'out').is_file()  # refused before anything was deleted
+
+
+def test_a_newrun_that_is_true_restarts_as_usual(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    (workdir / 'input').write_text('runtype : vmc\nnewrun  : T   #*! New run or continue old\n')
+    (workdir / 'out').write_text(INTERRUPTED)
+
+    assert runtime.start(str(workdir), restart=True)['removed'] == ['out']
+
+
+def test_a_run_that_cannot_start_deletes_nothing(workdir, monkeypatch):
+    """The order matters: an emptied directory plus a refusal is the worst of both."""
+    monkeypatch.setenv('CASINO_RUNQMC', str(workdir / 'no-such-runqmc'))
+    (workdir / 'out').write_text('an earlier run\n')
+
+    assert 'runqmc not found' in runtime.start(str(workdir), restart=True)['error']
+    assert (workdir / 'out').is_file()
 
 
 def test_unlock_unlocks_a_stale_lock(workdir, fake_runqmc, python_path):
@@ -182,6 +300,78 @@ def test_stop_kills_the_tree_and_clears_the_lock(workdir, fake_runqmc, python_pa
     assert not jobs.proc_alive(started['pid'], None)
 
 
+def test_stop_hands_the_directory_to_haltqmc(workdir, fake_runqmc, fake_haltqmc, python_path):
+    """Tidying up after a killed run is haltqmc's job, and -u is what makes it continuable."""
+    fake_runqmc(sleep=300)
+    fake_haltqmc()
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+    (workdir / 'config.out').write_text('configurations\n')
+
+    halt = runtime.stop(started['job_id'], timeout=10.0)['halt']
+    assert halt['exit_code'] == 0 and halt['updated_input'] is True
+    assert (workdir / 'haltqmc.args').read_text() == '-f -u'
+    # the input as it was before haltqmc rewrote it, kept in the registry and not in the calculation
+    saved = Path(halt['input_saved'])
+    assert saved.parent == jobs.jobs_dir() / started['job_id']
+    assert saved.read_text() == (workdir / 'input').read_text()
+    assert 'haltqmc_update_input' in (workdir / 'haltqmc.helper').read_text()
+    assert (workdir / 'config.in').read_text() == 'configurations\n'  # what a resume continues from
+    assert not (workdir / 'config.out').exists()
+
+
+def test_stop_without_the_update_helper_says_the_run_cannot_be_continued(workdir, fake_runqmc, fake_haltqmc, python_path):
+    """haltqmc errstops on -u without its helper, so the flag is not passed and that is said."""
+    fake_runqmc(sleep=300)
+    fake_haltqmc(helper=False)
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+
+    halt = runtime.stop(started['job_id'], timeout=10.0)['halt']
+    assert (workdir / 'haltqmc.args').read_text() == '-f'
+    assert halt['updated_input'] is False
+    assert 'not on PATH' in halt['note'] and 'restarted but not continued' in halt['note']
+
+
+def test_a_failing_haltqmc_is_reported_and_the_lock_still_goes(workdir, fake_runqmc, fake_haltqmc, python_path):
+    fake_runqmc(sleep=300)
+    fake_haltqmc(exit_code=1)
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+    (workdir / '.runqmc.lock').touch()
+
+    halt = runtime.stop(started['job_id'], timeout=10.0)['halt']
+    assert halt['exit_code'] == 1
+    assert 'haltqmc exited nonzero' in halt['error']
+    assert not (workdir / '.runqmc.lock').exists()
+
+
+def test_stop_without_haltqmc_says_what_was_not_done(workdir, fake_runqmc, python_path):
+    """No haltqmc: the job still stops, but the directory is left as the killed run left it."""
+    fake_runqmc(sleep=300)
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+
+    stopped = runtime.stop(started['job_id'], timeout=10.0)
+    assert stopped['status'] == 'stopped'
+    assert 'haltqmc not found' in stopped['halt']['error']
+    assert 'by hand' in stopped['halt']['note']
+    assert not (workdir / '.runqmc.lock').exists()  # the one thing that is cleared regardless
+
+
+def test_casino_processes_are_the_ones_in_this_jobs_group(tmp_path):
+    """What haltqmc -k pkills over the whole account, narrowed to one job's process group."""
+    binary = tmp_path / 'casino'  # a process is named after the file, so this one is `casino`
+    shutil.copy(shutil.which('sleep') or '/bin/sleep', binary)
+    process = subprocess.Popen([str(binary), '30'], start_new_session=True)
+    try:
+        assert runtime.casino_processes(process.pid) == [process.pid]
+        assert runtime.casino_processes(os.getpid()) == []
+    finally:
+        process.kill()
+        process.wait()
+
+
 def test_stopping_a_finished_job_says_so_instead_of_signalling(workdir, fake_runqmc, python_path):
     fake_runqmc()
     started = runtime.start(str(workdir))
@@ -199,7 +389,7 @@ def test_unknown_job_ids_are_errors_not_exceptions():
 
 def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
     fake_runqmc()
-    ids = [runtime.start(str(workdir), overwrite=True)['job_id'] for _ in range(3)]
+    ids = [runtime.start(str(workdir), restart=True)['job_id'] for _ in range(3)]
 
     listed = runtime.listing(limit=2)['jobs']
     assert [job['job_id'] for job in listed] == sorted(ids, reverse=True)[:2]

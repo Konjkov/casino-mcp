@@ -71,13 +71,59 @@ not ours.
 
 | tool | returns |
 | --- | --- |
-| `casino_run(workdir, nproc, version, overwrite, unlock)` | job_id, pid, workdir, command, binary stamp |
+| `casino_run(workdir, nproc, version, restart, resume, unlock)` | job_id, pid, workdir, command, binary stamp, what `restart` removed |
 | `casino_status(job_id)` | running / finished / failed / stopped / unknown, pid, runtime, exit code |
-| `casino_stop(job_id, timeout)` | what was signalled, final status |
+| `casino_stop(job_id, timeout)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs(limit)` | every known job, newest first |
 
 The runtype (`vmc`, `vmc_opt`, `vmc_dmc`, …) comes from the `input` file in `workdir`; there
 is no tool per runtype, because that multiplies the surface without adding a capability.
+
+Starting, stopping and continuing a calculation all go through CASINO's own scripts, and only
+through them: `runqmc` starts, `haltqmc` ends and tidies, `runqmc --continue` or a plain
+`runqmc` over the `input` that `haltqmc -u` rewrote carries on. Nothing here moves a config
+file, edits an `input`, or decides what a half-finished calculation should do next.
+
+### A directory that already holds an `out`
+
+`runqmc` appends to `out`, `vmc.hist` and `dmc.hist` rather than replacing them, so running
+twice in one directory produces files that are two runs glued together. That is refused by
+default, and there are two ways past it — opposites, so pass one:
+
+| | |
+| --- | --- |
+| `restart=true` | delete what the earlier run left and start over. `out`, `out_part.N`, the `.hist` files, `config.in`/`config.out`, `correlation.out.N`, `parameters.N.casl`, `saved_part_N/`. The inputs stay: `input`, the wave function, the pseudopotentials, `correlation.data`, `parameters.casl`. Every deleted name comes back in the reply, under `removed`. |
+| `resume=true` | carry the interrupted run on from where it stopped. Which of CASINO's two continuation routes that takes is read out of `out`, not chosen here — see below. |
+
+On the command line these are `--restart` and `--resume`, and `--continue` is accepted for
+the latter, which is what `runqmc` calls it. The tool parameter cannot be spelled that way:
+`continue` is a Python keyword.
+
+### Stopping a run, and continuing it
+
+`casino_stop` sends SIGTERM to that job's `casino` processes and to nothing else — the same
+signal `haltqmc -k` sends, except that haltqmc's is a `pkill -x casino` over the whole
+account, which would take down every other job on the machine. `mpirun` puts each rank in a
+process group of its own, so the ranks are found by session id: the session is the launcher's,
+and the whole tree shares it. `runqmc` itself is left alive to finish its epilogue, and only a
+job still running after `timeout` has its process group signalled and then killed.
+
+Then the directory goes to `haltqmc -f -u`, which is the part that makes a stopped run
+continuable: `config.out` becomes `config.in`, the lock and marker files go, and `input` is
+rewritten for the work that is left — `newrun : F`, the finished blocks subtracted, the
+runtype moved on to the next stage. The reply carries what it did under `halt`. The `input`
+as it was before that is copied into the job directory, and `halt.input_saved` says where.
+
+Which continuation route `resume=true` then takes is decided by the last run in `out`:
+
+| | |
+| --- | --- |
+| `CONTINUATION INFO:` in `out` | `runqmc --continue`. CASINO writes that block only when it stops itself on `max_cpu_time` or `max_real_time`; runqmc applies it and archives the finished segment into `saved_part_N/`. |
+| no such block | a plain `runqmc` over the `input` haltqmc rewrote. This is how an interrupted run continues — `--continue` would only errstop on the missing continuation info. |
+| the run reached its own end | refused: there is nothing to continue. |
+
+`restart=true` is refused on a directory whose `input` says `newrun : F`, because restarting
+deletes the `config.in` that CASINO then demands. Put back the saved input first.
 
 ## Command line
 
@@ -86,8 +132,10 @@ The same runtime without a model in the loop — which is also how you debug the
 ```bash
 casino-mcp config                  # the resolved configuration, and the files it came from
 casino-mcp run ./calc -p 4         # start a calculation
+casino-mcp run ./calc --restart    # ... after deleting what an earlier run left there
+casino-mcp run ./calc --continue   # ... or carrying that run on instead
 casino-mcp status 20260823-164511-qobn
-casino-mcp stop   20260823-164511-qobn
+casino-mcp stop   20260823-164511-qobn   # stop the run, then hand the directory to haltqmc
 casino-mcp jobs                    # the registry, newest first
 casino-mcp parse ./calc            # the `out` file as JSON
 casino-mcp serve                   # the MCP server on stdio
@@ -106,17 +154,19 @@ setting them once configures both layers:
 | `CASINO_HOME` | root of the CASINO installation (default `~/bin/CASINO`) |
 | `CASINO_ARCH` | build target, the directory under `bin_qmc`; used to stamp which binary a job ran |
 | `CASINO_RUNQMC` | explicit path to `runqmc`; otherwise `PATH`, then `$CASINO_HOME/bin_qmc/runqmc` |
+| `CASINO_HALTQMC` | explicit path to `haltqmc`; otherwise `PATH`, then `$CASINO_HOME/bin_qmc/haltqmc` |
 | `CASINO_MCP_STATE_DIR` | the job registry; otherwise `$XDG_STATE_HOME/casino-mcp` |
 | `CASINO_MCP_FORBID` | directories no run may ever touch, `:`-separated like `PATH` |
 
-Everything else — one MPI process, the `opt` binary, twenty seconds between SIGTERM and
-SIGKILL, two hundred job records kept — is a constant in `settings.py`. `casino-mcp config`
+Everything else — one MPI process, the `opt` binary, twenty seconds for a stopped job to end
+on its own, a minute for haltqmc to tidy, two hundred job records kept — is a constant in
+`settings.py`. `casino-mcp config`
 prints what the server would use right now and which variable said so; run it first when a
 tool call refuses.
 
-`CASINO_MCP_FORBID` is the one guard with no per-call override. `overwrite=true` and
-`unlock=true` unlock the other two; a directory listed here cannot be run in at all, which is
-what makes it the right place for a tree of committed reference calculations.
+`CASINO_MCP_FORBID` is the one guard with no per-call override. `restart=true`/`resume=true`
+and `unlock=true` unlock the other two; a directory listed here cannot be run in at all, which
+is what makes it the right place for a tree of committed reference calculations.
 
 ## How it works
 
@@ -134,15 +184,18 @@ jobs.json                    index: job_id -> record
 jobs/<job_id>/meta.json      what was launched, frozen at spawn
 jobs/<job_id>/status.json    written by the launcher when the run ends
 jobs/<job_id>/runqmc.log     runqmc's own output (not CASINO's `out`)
+jobs/<job_id>/input.before_halt   the input as it was, kept when a stop rewrites it
 ```
 
 The calculation directory only ever gets what CASINO puts there.
 
 **Why a launcher process.** `runqmc` is a bash script that execs `mpirun -np N casino`;
-signalling its pid orphans the tree. The launcher runs in its own session, so `killpg`
-reaches everything, its exit code survives the MCP server being restarted, and runqmc's
-output goes to a log instead of the JSON-RPC stream. A recycled pid cannot pass for a live
-job: `/proc/<pid>` start time is compared, and a zombie does not count as running.
+signalling its pid orphans the tree. The launcher runs in its own session, which is what makes
+the tree identifiable — `killpg` reaches runqmc and mpirun, and the session id finds the ranks
+that mpirun put in process groups of their own — its exit code survives the MCP server being
+restarted, and runqmc's output goes to a log instead of the JSON-RPC stream. A recycled pid
+cannot pass for a live job: `/proc/<pid>` start time is compared, and a zombie does not count
+as running.
 
 ## The `out` parser
 
@@ -166,7 +219,7 @@ under a non-C locale.
 ## Tests
 
 ```bash
-pytest                      # 141 tests, ~2 s, no CASINO needed
+pytest                      # 158 tests, ~5 s, no CASINO needed
 ```
 
 The unit suite runs anywhere: the parser is checked field by field against five real `out`

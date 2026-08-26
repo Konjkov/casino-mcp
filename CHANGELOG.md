@@ -6,6 +6,47 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `casino_run(resume=true)` (`casino-mcp run --continue`): carry an interrupted run on instead
+  of starting it again. Which of CASINO's two continuation routes that takes is read out of
+  `out` rather than chosen here: a run CASINO stopped on `max_cpu_time` / `max_real_time` left
+  a `CONTINUATION INFO:` block and is continued by `runqmc --continue`, and a run that was
+  interrupted is continued by a plain `runqmc` over the `input` that `haltqmc -u` rewrote —
+  `--continue` errstops there, on continuation info that was never written. A run that reached
+  its own end is refused: there is nothing to continue. The reply says which route was taken.
+- `CASINO_HALTQMC`, alongside `CASINO_RUNQMC`: an explicit path to `haltqmc`, otherwise `PATH`,
+  then `$CASINO_HOME/bin_qmc/haltqmc`. `casino-mcp config` reports it and says when it is
+  missing — a job can still be stopped without it, but its directory will not be tidied.
+
+### Changed
+
+- `casino_stop` no longer signals the whole process tree and clears the lock file itself. It
+  sends SIGTERM to that job's `casino` processes and to nothing else — the same signal
+  `haltqmc -k` sends, except that haltqmc's own kill is a `pkill -x casino` over every CASINO
+  process the account owns, which on a machine running several jobs would take the others down
+  too. The ranks are found by session id, because `mpirun` puts each of them in a process group
+  of its own and `killpg` therefore never reaches them. `runqmc` is left alive to finish its
+  epilogue — the per-node output concatenated into `out`, its own lock file removed — and only
+  a job still running after `timeout` has its process group signalled and then killed.
+- Everything a stop then does to the directory is `haltqmc -f -u`: `config.out` to `config.in`,
+  the lock and marker files, and `input` rewritten for the work that is left. The reply carries
+  what it did under `halt`. Since that rewrite is the one thing `restart` cannot undo — CASINO
+  refuses `newrun : F` without the `config.in` restarting deletes — the `input` as it was is
+  copied into the job directory first, and `restart=true` on a directory whose `input` is set
+  up to continue is refused with that copy's location.
+- **Breaking**: `overwrite` is replaced by `restart`, which does what `overwrite` only claimed
+  to. `overwrite=true` lifted the refusal to start in a directory that already held an `out`
+  and then deleted nothing, so `runqmc` — which appends — produced an `out` containing two
+  runs, and left the previous `.hist` files and configs to be appended to as well.
+  `restart=true` deletes them: `out`, `out_part.N`, `.out_proc*`, `vmc.hist`, `dmc.hist` and
+  their numbered backups, `config.in`/`config.out` and their `_fixed`/`_nofixed` forms,
+  `correlation.out.N`, `parameters.N.casl`, `saved_part_N/`. Inputs are never touched — the
+  list is named rather than derived, because the same directory holds the wave function, the
+  pseudopotentials and a `correlation.data` that is usually hand-edited. The reply carries
+  `removed`, the names that went. Nothing is deleted until every check that could refuse the
+  run has passed.
+
 ## [0.2.0] — 2026-08-25
 
 The test data became a check on CASINO rather than a record of it. Nothing in the tool surface

@@ -85,6 +85,7 @@ def test_resolved_is_json_able_and_names_every_variable(monkeypatch, tmp_path):
         'nproc': settings.NPROC,
         'version': settings.VERSION,
         'stop_timeout': settings.STOP_TIMEOUT,
+        'halt_timeout': settings.HALT_TIMEOUT,
         'keep_jobs': settings.KEEP_JOBS,
     }
 

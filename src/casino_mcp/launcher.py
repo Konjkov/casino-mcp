@@ -3,7 +3,9 @@
 Spawned by `runtime.start` as `python -m casino_mcp.launcher <job_dir>` in its own session,
 which buys three things and nothing else does:
 
-  * the whole process tree (runqmc -> mpirun -> casino) can be signalled as one group;
+  * the whole process tree (runqmc -> mpirun -> casino) shares one session, which is how a
+    stop finds the `casino` ranks -- mpirun puts each of them in a process group of its own,
+    so `killpg` reaches runqmc and mpirun and stops there;
   * the exit code survives the MCP server being restarted, because it is written to disk;
   * runqmc's own output goes to a log file instead of the server's stdio stream.
 """

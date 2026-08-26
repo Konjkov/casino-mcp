@@ -15,13 +15,15 @@ from pathlib import Path
 
 NPROC = 1  # MPI processes when a tool is not told otherwise
 VERSION = 'opt'  # binary flavour: the directory under bin_qmc/<arch>
-STOP_TIMEOUT = 20.0  # seconds between SIGTERM and SIGKILL when a job is stopped
+STOP_TIMEOUT = 20.0  # seconds a stopped job is given to end on its own before it is killed
+HALT_TIMEOUT = 60.0  # seconds haltqmc gets to tidy the directory after the job has ended
 KEEP_JOBS = 200  # job records kept in the index; the per-job directories are never trimmed
 
 ENVIRONMENT = (
     ('CASINO_HOME', 'root of the CASINO installation'),
     ('CASINO_ARCH', 'build target: the directory under bin_qmc, used to stamp which binary ran'),
     ('CASINO_RUNQMC', 'explicit path to runqmc; otherwise PATH, then $CASINO_HOME/bin_qmc/runqmc'),
+    ('CASINO_HALTQMC', 'explicit path to haltqmc; otherwise PATH, then $CASINO_HOME/bin_qmc/haltqmc'),
     ('CASINO_MCP_STATE_DIR', 'the job registry; otherwise $XDG_STATE_HOME/casino-mcp'),
     ('CASINO_MCP_FORBID', f'directories no run may ever touch, separated by {os.pathsep!r}'),
 )
@@ -37,6 +39,10 @@ def casino_arch() -> str:
 
 def runqmc_override() -> str:
     return os.environ.get('CASINO_RUNQMC', '')
+
+
+def haltqmc_override() -> str:
+    return os.environ.get('CASINO_HALTQMC', '')
 
 
 def binary_path(version: str) -> Path:
@@ -56,7 +62,7 @@ def state_path() -> Path:
 def forbidden(path: Path) -> str:
     """The $CASINO_MCP_FORBID entry that covers `path`, or '' if none does.
 
-    Unlike `overwrite` and `unlock`, this one has no per-call override: it is for the
+    Unlike `restart` and `unlock`, this one has no per-call override: it is for the
     directories -- committed reference calculations, someone else's results -- that no
     argument should be able to unlock.
     """
@@ -75,8 +81,15 @@ def resolved() -> dict:
         'casino_home': str(casino_home()),
         'casino_arch': casino_arch(),
         'runqmc': runqmc_override(),
+        'haltqmc': haltqmc_override(),
         'state_dir': str(state_path()),
         'forbid': [entry for entry in os.environ.get('CASINO_MCP_FORBID', '').split(os.pathsep) if entry],
-        'defaults': {'nproc': NPROC, 'version': VERSION, 'stop_timeout': STOP_TIMEOUT, 'keep_jobs': KEEP_JOBS},
+        'defaults': {
+            'nproc': NPROC,
+            'version': VERSION,
+            'stop_timeout': STOP_TIMEOUT,
+            'halt_timeout': HALT_TIMEOUT,
+            'keep_jobs': KEEP_JOBS,
+        },
         'environment': {name: os.environ.get(name) for name, _ in ENVIRONMENT},
     }

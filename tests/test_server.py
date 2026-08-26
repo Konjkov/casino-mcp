@@ -34,11 +34,12 @@ def test_no_generic_shell_tool_exists():
 
 def test_run_signature_matches_the_runtime():
     parameters = inspect.signature(server.casino_run).parameters
-    assert list(parameters) == ['workdir', 'nproc', 'version', 'overwrite', 'unlock']
+    assert list(parameters) == ['workdir', 'nproc', 'version', 'restart', 'resume', 'unlock']
     # these defaults are in the schema the model reads, so they must be the real ones
     assert parameters['nproc'].default == settings.NPROC
     assert parameters['version'].default == settings.VERSION
-    assert parameters['overwrite'].default is False
+    assert parameters['restart'].default is False
+    assert parameters['resume'].default is False
     assert parameters['unlock'].default is False
 
 
@@ -74,5 +75,5 @@ def test_each_tool_only_delegates(monkeypatch, tool, function, arguments):
 def test_run_passes_every_argument_through(monkeypatch):
     seen = {}
     monkeypatch.setattr(runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {})
-    server.casino_run('/tmp/calc', nproc=4, version='debug', overwrite=True, unlock=True)
-    assert seen == {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'overwrite': True, 'unlock': True}
+    server.casino_run('/tmp/calc', nproc=4, version='debug', restart=True, unlock=True)
+    assert seen == {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True}
