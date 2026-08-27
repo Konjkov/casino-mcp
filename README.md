@@ -5,6 +5,8 @@
 [![CI](https://github.com/Konjkov/casino-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Konjkov/casino-mcp/actions/workflows/ci.yml)
 [![Licence](https://img.shields.io/pypi/l/casino-mcp.svg)](LICENSE)
 
+[![casino-mcp MCP server](https://glama.ai/mcp/servers/Konjkov/casino-mcp/badges/card.svg)](https://glama.ai/mcp/servers/Konjkov/casino-mcp)
+
 An MCP control plane over the Fortran [CASINO](https://vallico.net/casinoqmc/) quantum Monte
 Carlo code: start runs, know what is running, stop them, and read an `out` file as structured
 data instead of shipping 4000 lines of text into a model's context.
@@ -256,4 +258,4 @@ both directions. Read it before adding a tool.
 
 ## Licence
 
-MIT.
+MIT — see [LICENSE](LICENSE).
