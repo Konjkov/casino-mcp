@@ -4,7 +4,9 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'casino-mcp'
-version = '0.2.0'
+# the version lives in src/casino_mcp/__init__.py, where the runtime already reads it:
+# `casino-mcp --version` and the MCP initialize handshake both report that one string
+dynamic = ['version']
 description = 'An MCP control plane over the Fortran CASINO quantum Monte Carlo code'
 authors = [
     {name = 'Vladimir Konkov', email = 'Konjkov.VV@gmail.com'},
@@ -47,6 +49,9 @@ issues = 'https://github.com/Konjkov/casino-mcp/issues'
 
 [project.scripts]
 casino-mcp = 'casino_mcp.cli:main'
+
+[tool.setuptools.dynamic]
+version = {attr = 'casino_mcp.__version__'}
 
 [tool.setuptools.packages.find]
 where = ['src']

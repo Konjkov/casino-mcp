@@ -12,9 +12,15 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from casino_mcp import runtime, settings
+from casino_mcp import __version__, runtime, settings
 
-server = MCPServer('casino', instructions='Run and monitor Fortran CASINO calculations. One directory is one calculation.')
+# The version travels in the initialize handshake, so a client reporting a misbehaving
+# server names a release; it is the one in __init__.py, never a second copy.
+server = MCPServer(
+    'casino',
+    instructions='Run and monitor Fortran CASINO calculations. One directory is one calculation.',
+    version=__version__,
+)
 
 
 @server.tool()

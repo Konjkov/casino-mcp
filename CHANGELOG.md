@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
+## [Unreleased]
+
+### Added
+
+- A `Dockerfile`: a `python:3.12-slim` image carrying nothing but the virtual environment,
+  running as an unprivileged user, with `casino-mcp serve` as its default command. CASINO is
+  not in it and does not need to be — the server starts and answers `tools/list` with no
+  installation present, which is what an introspecting registry asks of it. To run a real
+  calculation, mount the installation and point `CASINO_HOME` at the mount.
+
+### Fixed
+
+- The `initialize` handshake reported an empty server version. It now carries the one from
+  `casino_mcp.__version__`, which the package metadata reads too — so the version is a single
+  string in a single file rather than a copy in `pyproject.toml` to keep in step.
+
 ## [0.2.0] — 2026-08-26
 
 Two things, one release. Stopping a calculation and continuing it now go through CASINO’s
