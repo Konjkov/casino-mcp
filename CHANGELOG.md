@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-27
+
+A packaging release. The server can now be run from an image rather than an installation,
+it says which version of itself is running, and it carries the licence that scientific
+software is most often redistributed under. Nothing about how CASINO is driven has changed.
 
 ### Added
 
@@ -13,6 +17,12 @@ All notable changes to this project are documented here. The format follows
   not in it and does not need to be — the server starts and answers `tools/list` with no
   installation present, which is what an introspecting registry asks of it. To run a real
   calculation, mount the installation and point `CASINO_HOME` at the mount.
+
+### Changed
+
+- The licence is now Apache-2.0, where it was MIT. Same permissions, plus an explicit
+  patent grant and the requirement to state modifications — the terms scientific-software
+  users are most often required to redistribute under.
 
 ### Fixed
 
@@ -133,6 +143,7 @@ to the model are not shipped yet.
 - Nothing shells out to `envmc`/`endmc` at runtime; `endmc` misparses numbers under a non-C
   locale.
 
-[Unreleased]: https://github.com/Konjkov/casino-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Konjkov/casino-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Konjkov/casino-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Konjkov/casino-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Konjkov/casino-mcp/releases/tag/v0.1.0

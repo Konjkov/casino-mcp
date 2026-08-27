@@ -258,4 +258,4 @@ both directions. Read it before adding a tool.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE).
