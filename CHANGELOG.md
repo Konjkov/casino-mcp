@@ -4,63 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
-## [0.5.0] — 2026-08-28
+## [0.4.0] — 2026-08-28
 
-The calculation at the *start* of a chain can now be prepared too. Until this release the
-server could write the `input` for a run and read the answer out of it, but not the one file a
-first run cannot do without and no CASINO utility writes: the `correlation.data` holding the
-wave function parameters that are about to be optimised.
-
-### Added
-
-- **A blank Jastrow factor and a blank backflow function**, for the calculation at the start of
-  a chain: one that has an orbital file and nothing else, where `use_jastrow : T` and
-  `backflow : T` need a `correlation.data` that does not exist yet. No CASINO utility writes one
-  — nothing in `utils/` does, and the manual's own instruction is to copy an example and delete
-  its parameter lines by hand — so
-  `casino_prepare(source, dest, jastrow=['u', 'chi', 'f'], backflow=['eta', 'mu', 'phi'])`
-  writes it, both blocks in the one file, each only if the input turns its keyword on.
-- The backflow half is the Jastrow half twice over — a `mu` set is a `chi` set, `phi` is `f`
-  with two more flags — with two differences that are not cosmetic. `eta` has a cutoff *per
-  spin-pair channel*, and `read_cutoff_eta` errstops if the first line is missing. And the
-  electron-nucleus cusp type of every `mu` and `phi` set is not a preference but a fact about
-  the atom, 1 for a bare nucleus and 0 behind a pseudopotential — which CASINO reads and
-  believes, checking it against nothing, so a wrong value there is not an errstop but a wrong
-  wave function. It is derived from the `*_pp.data` files rather than defaulted.
-- The one rule that could not be read off the CASINO source, and was found by putting orders to
-  a `testrun : T` CASINO one at a time: an **all-electron `phi` set with `N_eN = 1` has no free
-  parameters** once the cusp conditions are imposed, whatever `N_ee` is, while a pseudo-atom set
-  at the same order is fine. Refused before the file is written, with the fix named.
-- No `AE CUTOFFS` block is written: it is optional, and `init_pbackflow` gives every
-  all-electron nucleus a set of its own with the length it would have defaulted to.
-- `correlation_data`, the module under it: the geometry out of the orbital file's own header
-  (`input` says how many electrons there are and never how many nuclei), one chi and f set per
-  element with every atom labelled, and no parameter value anywhere — CASINO fills `alpha`,
-  `beta` and `gamma` with zeros before it reads a line, and says "Not all coefficients supplied"
-  when there are none. Which atoms are pseudo-atoms is read out of the `*_pp.data` files, each
-  of which states its own atomic number, so the chi cusp is refused exactly where
-  `read_chi_term` would errstop on it — on a pseudo-atom, and on a Slater-type basis.
-- Cutoffs are written as zero, which CASINO reads as *use the default* and answers with
-  `default_L_u`, `default_L_chi`, `default_L_f`. Writing a number instead would be
-  reimplementing a choice that depends on the geometry; `warnings` says which values CASINO will
-  take, and `jastrow_settings` sets one where the default is not wanted.
-- `casino-mcp prepare --jastrow u,chi,f --backflow eta,mu,phi -j n_u=4`, the same for a shell.
-- `tests/integration/test_blank_correlation.py`: every generated file put to a real CASINO with
-  `testrun : T`, which reads the input files, imposes the cusp, no-duplication and no-cusp
-  constraints, counts what is left free, checks that they hold, and stops — in a fraction of a
-  second. `runqmc --check-only` is no oracle for this one: it never opens `correlation.data`.
-
-### Changed
-
-- `input_file.check_files` takes `writing`, the files the caller is about to write. A blank
-  `correlation.data` is prepared alongside the `input` it goes with, and refusing the input
-  because the file is not there yet would refuse the pair.
-
-## [0.4.0] — 2026-08-27
-
-The server can now read a calculation and write one. Both halves are about the same thing:
-a DMC run takes hours, and until this release the only two moments it could be spoken about
-were before it started and after it ended.
+The server can now read a calculation and write one, at both ends of a chain. Reading: a DMC
+run takes hours, and until this release the only two moments it could be spoken about were
+before it started and after it ended. Writing: the `input` for the next run, and — for the
+first run, the one whose directory holds an orbital file and nothing else — the
+`correlation.data` that no CASINO utility writes.
 
 ### Added
 
@@ -107,6 +57,42 @@ were before it started and after it ended.
   when our own `check` does. It earned its place immediately: both `dmc_*_nstep` keywords are
   mandatory for *any* DMC runtype, including an equilibration-only one, and `dtdmc` and the
   `*_nblock`s are not mandatory at all. The tables now come from `runqmc`'s own.
+- **A blank Jastrow factor and a blank backflow function**, for the calculation at the start of
+  a chain: one that has an orbital file and nothing else, where `use_jastrow : T` and
+  `backflow : T` need a `correlation.data` that does not exist yet. No CASINO utility writes one
+  — nothing in `utils/` does, and the manual's own instruction is to copy an example and delete
+  its parameter lines by hand — so
+  `casino_prepare(source, dest, jastrow=['u', 'chi', 'f'], backflow=['eta', 'mu', 'phi'])`
+  writes it, both blocks in the one file, each only if the input turns its keyword on.
+- The backflow half is the Jastrow half twice over — a `mu` set is a `chi` set, `phi` is `f`
+  with two more flags — with two differences that are not cosmetic. `eta` has a cutoff *per
+  spin-pair channel*, and `read_cutoff_eta` errstops if the first line is missing. And the
+  electron-nucleus cusp type of every `mu` and `phi` set is not a preference but a fact about
+  the atom, 1 for a bare nucleus and 0 behind a pseudopotential — which CASINO reads and
+  believes, checking it against nothing, so a wrong value there is not an errstop but a wrong
+  wave function. It is derived from the `*_pp.data` files rather than defaulted.
+- The one rule that could not be read off the CASINO source, and was found by putting orders to
+  a `testrun : T` CASINO one at a time: an **all-electron `phi` set with `N_eN = 1` has no free
+  parameters** once the cusp conditions are imposed, whatever `N_ee` is, while a pseudo-atom set
+  at the same order is fine. Refused before the file is written, with the fix named.
+- No `AE CUTOFFS` block is written: it is optional, and `init_pbackflow` gives every
+  all-electron nucleus a set of its own with the length it would have defaulted to.
+- `correlation_data`, the module under it: the geometry out of the orbital file's own header
+  (`input` says how many electrons there are and never how many nuclei), one chi and f set per
+  element with every atom labelled, and no parameter value anywhere — CASINO fills `alpha`,
+  `beta` and `gamma` with zeros before it reads a line, and says "Not all coefficients supplied"
+  when there are none. Which atoms are pseudo-atoms is read out of the `*_pp.data` files, each
+  of which states its own atomic number, so the chi cusp is refused exactly where
+  `read_chi_term` would errstop on it — on a pseudo-atom, and on a Slater-type basis.
+- Cutoffs are written as zero, which CASINO reads as *use the default* and answers with
+  `default_L_u`, `default_L_chi`, `default_L_f`. Writing a number instead would be
+  reimplementing a choice that depends on the geometry; `warnings` says which values CASINO will
+  take, and `jastrow_settings` sets one where the default is not wanted.
+- `casino-mcp prepare --jastrow u,chi,f --backflow eta,mu,phi -j n_u=4`, the same for a shell.
+- `tests/integration/test_blank_correlation.py`: every generated file put to a real CASINO with
+  `testrun : T`, which reads the input files, imposes the cusp, no-duplication and no-cusp
+  constraints, counts what is left free, checks that they hold, and stops — in a fraction of a
+  second. `runqmc --check-only` is no oracle for this one: it never opens `correlation.data`.
 
 ### Changed
 
@@ -115,6 +101,9 @@ were before it started and after it ended.
 - A DMC recipe sets `popstats : T`. It is not CASINO's default, and it is what puts the
   statistical-efficiency section into `dmc.status` — the difference between a running
   calculation that can be read and one that cannot, for no cost.
+- `input_file.check_files` takes `writing`, the files the caller is about to write. A blank
+  `correlation.data` is prepared alongside the `input` it goes with, and refusing the input
+  because the file is not there yet would refuse the pair.
 
 ### Fixed
 
