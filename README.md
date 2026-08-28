@@ -290,8 +290,8 @@ from casino_mcp import input_file
 
 current = input_file.read('./vmc')
 filled, missing = input_file.recipe('vmc_dmc', {'dtdmc': '0.02083'}, present=current['keywords'])
-text = input_file.apply(current['text'], filled)      # edits; it does not regenerate
-input_file.check(*input_file.parse_text(text))        # [] when CASINO would take it
+text = input_file.apply(current['text'], filled)  # edits; it does not regenerate
+input_file.check(*input_file.parse_text(text))  # [] when CASINO would take it
 ```
 
 `apply` only touches the lines it is named for, so hand comments, `%block`s and expert
@@ -312,8 +312,8 @@ arguments above:
 ```python
 from casino_mcp import correlation_data
 
-geometry = correlation_data.read_geometry('./hf/gwfn.data')   # atoms, not orbitals
-pseudo = correlation_data.pseudo_species('./hf')              # {8}, out of o_pp.data
+geometry = correlation_data.read_geometry('./hf/gwfn.data')  # atoms, not orbitals
+pseudo = correlation_data.pseudo_species('./hf')  # {8}, out of o_pp.data
 problems = correlation_data.check(geometry, terms=('u', 'chi', 'f'), backflow=('eta', 'mu', 'phi'))
 text = correlation_data.blank(geometry, backflow=('eta', 'mu', 'phi'), pseudo=pseudo)
 ```
