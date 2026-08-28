@@ -277,18 +277,30 @@ def carry_configurations(source: Path, dest: Path, keywords: dict) -> str:
     return 'config.out -> config.in'
 
 
-def blank_jastrow(source: Path, dest: Path, keywords: dict, terms, overrides: dict | None = None) -> tuple[str, dict, list[str], list[str]]:
-    """The `correlation.data` a calculation with no Jastrow factor needs: text, what it says,
-    what is wrong with asking for it, and what it does not say out loud.
+def blank_correlation(
+    source: Path,
+    dest: Path,
+    keywords: dict,
+    terms,
+    backflow=(),
+    overrides: dict | None = None,
+) -> tuple[str, dict, list[str], list[str]]:
+    """The `correlation.data` a calculation with no wave function parameters needs: text, what it
+    says, what is wrong with asking for it, and what it does not say out loud.
 
     The geometry has to come from the orbital file -- `input` knows how many electrons there are
     and never how many nuclei -- so which file that is comes from `atom_basis_type`, the same
     table `check_files` refuses a run over.
+
+    Both blocks go in one file, because that is where CASINO looks for both, and each is written
+    only if its own keyword in the `input` is on: `use_jastrow` for the Jastrow factor,
+    `backflow` for the backflow function. Writing a block the run would not read, or turning on
+    a keyword whose block is missing, are the same mistake from opposite ends.
     """
     basis = keywords.get('atom_basis_type', '').strip().lower()
     orbitals = input_file.ORBITAL_FILE.get(basis)
     if orbitals is None:
-        return '', {}, [f'atom_basis_type {basis or "(unset)"} has no orbital file to read the atoms out of, and a chi or f term needs them'], []
+        return '', {}, [f'atom_basis_type {basis or "(unset)"} has no orbital file to read the atoms out of, and a chi or mu term needs them'], []
     if basis in correlation_data.UNREADABLE_GEOMETRY:
         return (
             '',
@@ -308,22 +320,39 @@ def blank_jastrow(source: Path, dest: Path, keywords: dict, terms, overrides: di
         return '', {}, [str(problem)], []
 
     pseudo = correlation_data.pseudo_species(source)
-    errors = correlation_data.check(geometry, terms, settings_, pseudo=pseudo, basis=basis)
-    if not input_file.truthy(keywords.get('use_jastrow')):
-        errors.append('the input this would write does not set use_jastrow : T, so CASINO would not read the Jastrow factor at all')
-    if input_file.truthy(keywords.get('backflow')):
-        errors.append('backflow is T, and this writes a JASTROW block only: CASINO wants a BACKFLOW block in the same file')
+    errors = correlation_data.check(geometry, terms, settings_, pseudo=pseudo, basis=basis, backflow=backflow)
+    errors.extend(check_wanted(keywords, terms, backflow))
     if errors:
         return '', {}, errors, []
 
-    text = correlation_data.blank(geometry, terms=terms, title=dest.name, settings=settings_)
+    text = correlation_data.blank(geometry, terms=terms, backflow=backflow, title=dest.name, settings=settings_, pseudo=pseudo)
     description = {
         'terms': list(terms),
+        'backflow': list(backflow),
         'atoms': len(geometry['atomic_numbers']),
         'sets': [{'atomic_number': group['z'], 'atoms': group['labels']} for group in geometry['sets']],
         'pseudo': sorted(pseudo & set(geometry['atomic_numbers'])),
     }
-    return text, description, [], correlation_data.describe(geometry, terms, settings_, pseudo=pseudo, basis=basis)
+    return text, description, [], correlation_data.describe(geometry, terms, settings_, pseudo=pseudo, basis=basis, backflow=backflow)
+
+
+def check_wanted(keywords: dict, terms, backflow) -> list[str]:
+    """Whether the input asks for the blocks being written, and asks for none that are not.
+
+    A block CASINO is told to use and cannot find is an errstop; a block it is not told to use is
+    dead text in the file. Both are worth catching before the directory exists, and the second is
+    the more insidious -- an optimisation that silently has nothing to optimize.
+    """
+    errors = []
+    for names, keyword, block in ((terms, 'use_jastrow', 'JASTROW'), (backflow, 'backflow', 'BACKFLOW')):
+        wanted = input_file.truthy(keywords.get(keyword))
+        if names and not wanted:
+            errors.append(f'the input this would write does not set {keyword} : T, so CASINO would not read the {block} block at all')
+        if wanted and not names:
+            errors.append(
+                f'{keyword} is T and no {block} block was asked for: CASINO errstops on the keyword without the block. Name the terms it should have'
+            )
+    return errors
 
 
 def prepare(
@@ -332,6 +361,7 @@ def prepare(
     runtype: str = '',
     overrides: dict[str, str | None] | None = None,
     jastrow: list[str] | None = None,
+    backflow: list[str] | None = None,
     jastrow_settings: dict | None = None,
 ) -> dict[str, Any]:
     """Copy a calculation into a new directory and write the `input` the next run needs.
@@ -347,11 +377,13 @@ def prepare(
     and any hand tuning survive; `overrides` wins over both. A value of null deletes a keyword,
     and a value with newlines in it is written as a `%block`.
 
-    `jastrow` names the terms of a blank Jastrow factor to write -- `['u', 'chi', 'f']` for the
-    usual one -- for the case the source has no `correlation.data` at all, which is every
-    calculation that has just come out of an orbital code. Every coefficient starts at zero,
-    because starting them anywhere else is what the optimisation is for. `jastrow_settings`
-    holds the shape of it: expansion orders, spin dependence, cutoffs, the truncation order.
+    `jastrow` and `backflow` name the terms of a blank `correlation.data` to write --
+    `['u', 'chi', 'f']` and `['eta', 'mu', 'phi']` for the usual ones -- for the case the source
+    has none at all, which is every calculation that has just come out of an orbital code. Both
+    blocks go in the one file, each written only if the `input` turns its keyword on. Every
+    coefficient starts at zero, because starting them anywhere else is what the optimisation is
+    for. `jastrow_settings` holds the shape of both: expansion orders, spin dependence, cutoffs,
+    the truncation orders.
 
     Nothing is written unless the result would run: the keywords are checked for the
     combinations CASINO only rejects at run time, and the directory for the files the input
@@ -367,11 +399,11 @@ def prepare(
     forbidden = settings.forbidden(dest_path)
     if forbidden:
         return {'error': f'{dest_path} is under {forbidden}, which $CASINO_MCP_FORBID lists. No override exists; prepare the run elsewhere.'}
-    if jastrow and (source_path / 'correlation.data').is_file():
+    if (jastrow or backflow) and (source_path / 'correlation.data').is_file():
         return {
             'error': f'{source_path} already has a correlation.data, and it is an input: it would be copied over. '
-            f'A blank Jastrow would throw away whatever it holds.',
-            'fix': 'prepare from a directory that has no correlation.data, or leave jastrow unset to keep the one there is',
+            f'A blank one would throw away whatever it holds.',
+            'fix': 'prepare from a directory that has no correlation.data, or leave jastrow and backflow unset to keep the one there is',
         }
 
     current = input_file.read(source_path / 'input')
@@ -392,14 +424,16 @@ def prepare(
     text = input_file.apply(current['text'], values) if values else current['text']
     keywords, blocks = input_file.parse_text(text)
 
-    jastrow_text, described, jastrow_errors, jastrow_notes = '', {}, [], []
-    if jastrow:
-        jastrow_text, described, jastrow_errors, jastrow_notes = blank_jastrow(source_path, dest_path, keywords, jastrow, jastrow_settings)
+    correlation_text, described, correlation_errors, correlation_notes = '', {}, [], []
+    if jastrow or backflow:
+        correlation_text, described, correlation_errors, correlation_notes = blank_correlation(
+            source_path, dest_path, keywords, jastrow or (), backflow or (), jastrow_settings
+        )
 
     errors = (
         input_file.check(keywords, blocks)
-        + input_file.check_files(source_path, keywords, writing=('correlation.data',) if jastrow else ())
-        + jastrow_errors
+        + input_file.check_files(source_path, keywords, writing=('correlation.data',) if (jastrow or backflow) else ())
+        + correlation_errors
     )
     if errors:
         return {'error': 'the input this would write does not describe a run CASINO can do', 'problems': errors, 'wrote': None}
@@ -410,8 +444,8 @@ def prepare(
     if carried:
         copied.append(carried)
     (dest_path / 'input').write_text(text)
-    if jastrow_text:
-        (dest_path / 'correlation.data').write_text(jastrow_text)
+    if correlation_text:
+        (dest_path / 'correlation.data').write_text(correlation_text)
         copied.append('correlation.data (written blank)')
     changed = {name: value for name, value in values.items() if current['keywords'].get(name, object()) != value}
     return {
@@ -420,8 +454,8 @@ def prepare(
         'runtype': keywords.get('runtype', '').strip(),
         'copied': copied,
         'changed': changed,
-        'jastrow': described or None,
-        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords) + jastrow_notes,
+        'correlation_data': described or None,
+        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords) + correlation_notes,
     }
 
 

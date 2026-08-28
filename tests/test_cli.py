@@ -161,8 +161,16 @@ def test_prepare_takes_the_jastrow_terms_as_a_list(monkeypatch, capsys, tmp_path
 def test_a_bare_jastrow_flag_means_all_the_terms(monkeypatch, capsys, tmp_path):
     seen = {}
     monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(**kwargs) or {})
-    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--jastrow')
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--jastrow', '--backflow')
     assert seen['jastrow'] == ['u', 'chi', 'f']
+    assert seen['backflow'] == ['eta', 'mu', 'phi']
+
+
+def test_the_two_blocks_are_asked_for_separately(monkeypatch, capsys, tmp_path):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(**kwargs) or {})
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--backflow', 'eta,mu')
+    assert seen['jastrow'] is None and seen['backflow'] == ['eta', 'mu']
 
 
 def test_a_jastrow_setting_that_is_not_a_number_is_refused(capsys, tmp_path):

@@ -69,6 +69,7 @@ def casino_prepare(
     runtype: str = '',
     overrides: dict[str, str | None] | None = None,
     jastrow: list[str] | None = None,
+    backflow: list[str] | None = None,
     jastrow_settings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Copy a calculation into a new directory and write the `input` for the next run in it.
@@ -103,11 +104,21 @@ def casino_prepare(
         unset when the source already has a `correlation.data`; asking for both is refused,
         because a blank Jastrow would discard an optimised one. Finite systems only so far: a
         periodic Jastrow wants a P term, whose stars come from CASINO's own `make_p_stars`.
-    jastrow_settings: the shape of that Jastrow, where the defaults are not wanted --
+    backflow: the terms of a blank backflow function, in the same file -- ['eta', 'mu', 'phi']
+        for the usual one. It goes with `backflow : T` in the input, and the two blocks are
+        written together for a calculation that wants both. The electron-nucleus cusp type of
+        each set is not a setting: it is read off the pseudopotentials in the directory, 1 for a
+        bare nucleus and 0 behind a pseudopotential, because CASINO believes the flag without
+        checking it. No AE CUTOFFS section is written -- it is optional, and CASINO chooses the
+        lengths itself.
+    jastrow_settings: the shape of both blocks, where the defaults are not wanted. Jastrow:
         trunc_order (3), n_u (8), n_chi (8), n_f_en (3), n_f_ee (3), spin_dep_u (1),
         spin_dep_chi (0), spin_dep_f (1), cusp_chi (0), cutoff_u / cutoff_chi / cutoff_f (0,
         which CASINO reads as "use your own default"), no_dup_u (0), no_dup_chi (0),
-        optimizable (1, the cutoffs).
+        optimizable (1, the cutoffs). Backflow: bf_trunc_order (3), n_eta (9), n_mu (9),
+        n_phi_en (3), n_phi_ee (3), spin_dep_eta (1), spin_dep_mu (0), spin_dep_phi (1),
+        cutoff_eta / cutoff_mu / cutoff_phi (0), irrotational (0), cusp_bf (-1, meaning derive
+        it from the pseudopotentials).
 
     Nothing is written unless the result would actually run: the keyword combinations CASINO
     only rejects at run time are checked first (an optimisation sample smaller than the DMC
@@ -117,7 +128,7 @@ def casino_prepare(
     placeholder default, `dmc_stats_nstep` not divisible by its block count, keywords left over
     from the runtype this was copied from -- comes back in `warnings` and does not stop it.
     """
-    return runtime.prepare(source, dest, runtype=runtype, overrides=overrides, jastrow=jastrow, jastrow_settings=jastrow_settings)
+    return runtime.prepare(source, dest, runtype=runtype, overrides=overrides, jastrow=jastrow, backflow=backflow, jastrow_settings=jastrow_settings)
 
 
 @server.tool()

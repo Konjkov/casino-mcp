@@ -76,12 +76,12 @@ def keyword_pairs(settings_list, flag: str = '--set') -> dict:
     return pairs
 
 
-def jastrow_terms(value: str | None) -> list[str] | None:
-    """`--jastrow u,chi,f`, and a bare `--jastrow` for the three of them."""
+def term_names(value: str | None, default: tuple[str, ...]) -> list[str] | None:
+    """`--jastrow u,chi,f`, and a bare `--jastrow` for all of them."""
     if value is None:
         return None
     terms = [term.strip().lower() for term in value.split(',') if term.strip()]
-    return terms or list(correlation_data.TERMS)
+    return terms or list(default)
 
 
 def jastrow_numbers(settings_list) -> dict:
@@ -102,7 +102,8 @@ def cmd_prepare(args) -> int:
             args.dest,
             runtype=args.runtype,
             overrides=keyword_pairs(args.set),
-            jastrow=jastrow_terms(args.jastrow),
+            jastrow=term_names(args.jastrow, correlation_data.TERMS),
+            backflow=term_names(args.backflow, correlation_data.BACKFLOW_TERMS),
             jastrow_settings=jastrow_numbers(args.jastrow_set),
         )
     )
@@ -185,11 +186,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=f'write a blank Jastrow factor: the terms, comma-separated ({",".join(correlation_data.TERMS)}), or bare for all of them',
     )
     prepare.add_argument(
+        '--backflow',
+        nargs='?',
+        const='',
+        metavar='TERMS',
+        help=f'write a blank backflow function too: the terms ({",".join(correlation_data.BACKFLOW_TERMS)}), or bare for all of them',
+    )
+    prepare.add_argument(
         '-j',
         '--jastrow-set',
         action='append',
         metavar='NAME=VALUE',
-        help=f'one Jastrow setting; repeatable ({", ".join(sorted(correlation_data.DEFAULTS))})',
+        help=f'one Jastrow or backflow setting; repeatable ({", ".join(sorted(correlation_data.DEFAULTS))})',
     )
     prepare.set_defaults(func=cmd_prepare)
 

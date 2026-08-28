@@ -591,7 +591,7 @@ def test_prepare_writes_the_jastrow_a_calculation_with_none_needs(orbitals_only,
     written = (tmp_path / 'opt' / 'correlation.data').read_text()
     assert ' START JASTROW' in written and ' END JASTROW' in written
     assert 'correlation.data (written blank)' in prepared['copied']
-    assert prepared['jastrow']['sets'] == [{'atomic_number': 8, 'atoms': [1]}, {'atomic_number': 1, 'atoms': [2, 3]}]
+    assert prepared['correlation_data']['sets'] == [{'atomic_number': 8, 'atoms': [1]}, {'atomic_number': 1, 'atoms': [2, 3]}]
 
 
 def test_the_input_is_not_refused_for_the_jastrow_that_is_about_to_be_written(orbitals_only, tmp_path):
@@ -616,6 +616,38 @@ def test_a_jastrow_the_input_would_not_read_is_refused(orbitals_only, tmp_path):
 def test_a_jastrow_that_backflow_would_leave_half_written_is_refused(orbitals_only, tmp_path):
     prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'bf'), overrides={'backflow': 'T'}, jastrow=['u', 'chi', 'f'])
     assert any('BACKFLOW block' in problem for problem in prepared['problems'])
+
+
+def test_prepare_writes_both_blocks_into_the_one_file(orbitals_only, tmp_path):
+    prepared = runtime.prepare(
+        str(orbitals_only),
+        str(tmp_path / 'bf'),
+        overrides={'backflow': 'T'},
+        jastrow=['u', 'chi', 'f'],
+        backflow=['eta', 'mu', 'phi'],
+    )
+    assert 'error' not in prepared, prepared
+    written = (tmp_path / 'bf' / 'correlation.data').read_text()
+    assert ' START JASTROW' in written and ' START BACKFLOW' in written
+    assert prepared['correlation_data']['backflow'] == ['eta', 'mu', 'phi']
+
+
+def test_a_backflow_block_the_input_would_not_read_is_refused(orbitals_only, tmp_path):
+    """`backflow : F` and a BACKFLOW block is the mirror of the case above, and as wrong."""
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'bf'), jastrow=['u'], backflow=['eta'])
+    assert any('backflow : T' in problem for problem in prepared['problems']), prepared
+    assert not (tmp_path / 'bf').exists()
+
+
+def test_the_backflow_cusp_type_is_derived_from_the_directory(orbitals_only, tmp_path):
+    """A pseudopotential in the directory is what makes a set's nucleus not bare."""
+    (orbitals_only / 'o_pp.data').write_text('a pseudopotential\nAtomic number and pseudo-charge\n8 6.0\n')
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'bf'), overrides={'backflow': 'T'}, jastrow=['u'], backflow=['mu'])
+    assert 'error' not in prepared, prepared
+    assert prepared['correlation_data']['pseudo'] == [8]
+    written = (tmp_path / 'bf' / 'correlation.data').read_text().splitlines()
+    types = [line.strip() for index, line in enumerate(written) if 'cusp conditions' in written[index - 1]]
+    assert types == ['0', '1'], 'oxygen is behind a pseudopotential and the hydrogens are not'
 
 
 def test_a_basis_whose_geometry_is_not_readable_says_so(orbitals_only, tmp_path):

@@ -189,11 +189,21 @@ def test_the_committed_example_is_what_this_writes_for_the_same_atom():
 
 
 def jastrow_lines(text: str) -> list[str]:
-    """The JASTROW block: no blank lines, no parameter lines, and no cutoff *value*."""
+    return block_lines(text, 'JASTROW')
+
+
+def block_lines(text: str, block: str) -> list[str]:
+    """One block: no blank lines, no parameter lines, and no cutoff *value*.
+
+    The cutoff values are the one place a blank file and an optimized one legitimately differ --
+    ours says zero and asks CASINO for its own default -- so they are dropped and everything else
+    has to match line for line. eta's cutoffs go with them: they carry a `! L_s` comment, which
+    is what marks a parameter line here.
+    """
     lines = text.splitlines()
-    start = lines.index(' START JASTROW')
+    start = lines.index(f' START {block}')
     kept, after_cutoff = [], False
-    for line in lines[start : lines.index(' END JASTROW') + 1]:
+    for line in lines[start : lines.index(f' END {block}') + 1]:
         if line.strip() and '!' not in line and not after_cutoff:
             kept.append(line)
         after_cutoff = line.strip().startswith('Cutoff (a.u.)')
@@ -248,3 +258,96 @@ def test_an_all_electron_atom_on_a_cuspless_basis_is_pointed_out(molecule):
     notes = correlation_data.describe(molecule, basis='blip')
     assert any('all-electron' in note and 'cusp' in note for note in notes), notes
     assert not any('all-electron' in note for note in correlation_data.describe(molecule, basis='gaussian'))
+
+
+# --- the backflow function ------------------------------------------------------------
+
+
+def test_the_backflow_block_is_written_beside_the_jastrow(molecule):
+    text = correlation_data.blank(molecule, backflow=correlation_data.BACKFLOW_TERMS)
+    assert text.index(' START JASTROW') < text.index(' START BACKFLOW')
+    assert ' END BACKFLOW' in text
+    assert text.count(' START SET 2') == 4  # chi, f, mu and phi each have a second element
+
+
+def test_either_block_can_be_written_alone(molecule):
+    only_backflow = correlation_data.blank(molecule, terms=(), backflow=('eta',))
+    assert 'JASTROW' not in only_backflow and ' START ETA TERM' in only_backflow
+    only_jastrow = correlation_data.blank(molecule, terms=('u',))
+    assert 'BACKFLOW' not in only_jastrow
+
+
+def test_eta_gets_one_cutoff_line_per_spin_pair_channel(molecule):
+    """The one cutoff in either file that is not a single number: `read_cutoff_eta` loops."""
+    for spin_dep, channels in ((0, 1), (1, 2), (2, 3)):
+        settings = correlation_data.settings_for({'spin_dep_eta': spin_dep})
+        text = correlation_data.blank(molecule, terms=(), backflow=('eta',), settings=settings)
+        assert [line for line in text.splitlines() if line.strip().startswith('0.0')] == [
+            f'   0.0                               1       ! L_{channel}' for channel in range(1, channels + 1)
+        ]
+
+
+def test_the_backflow_cusp_type_is_read_off_the_pseudopotentials(molecule):
+    """1 where the nucleus is bare, 0 where a pseudopotential stands in for it."""
+    text = correlation_data.blank(molecule, terms=(), backflow=('mu', 'phi'), pseudo={8})
+    types = [line.strip() for index, line in enumerate(text.splitlines()) if 'cusp conditions' in text.splitlines()[index - 1]]
+    assert types == ['0', '1', '0', '1'], 'oxygen has a pseudopotential and the two hydrogens do not'
+
+
+def test_the_cusp_type_can_be_set_by_hand_for_a_cuspless_orbital_set(molecule):
+    settings = correlation_data.settings_for({'cusp_bf': 0})
+    text = correlation_data.blank(molecule, terms=(), backflow=('mu',), settings=settings)
+    assert '1' not in [line.strip() for index, line in enumerate(text.splitlines()) if 'cusp conditions' in text.splitlines()[index - 1]]
+    assert any('by hand' in note for note in correlation_data.describe(molecule, terms=(), settings=settings, backflow=('mu',)))
+
+
+def test_an_all_electron_phi_set_needs_the_expansion_order_casino_leaves_room_in(molecule):
+    """N_eN of 1 leaves nothing free once the cusp conditions are imposed -- but only for AE."""
+    settings = correlation_data.settings_for({'n_phi_en': 1})
+    problems = correlation_data.check(molecule, terms=(), settings=settings, backflow=('phi',))
+    assert any('no free parameters' in problem for problem in problems), problems
+    assert correlation_data.check(molecule, terms=(), settings=settings, backflow=('phi',), pseudo={1, 8}) == []
+
+
+def test_an_all_electron_mu_set_spends_one_parameter_per_channel_on_the_cusp(molecule):
+    settings = correlation_data.settings_for({'n_mu': 1})
+    assert any('no free parameters' in problem for problem in correlation_data.check(molecule, terms=(), settings=settings, backflow=('mu',)))
+    assert correlation_data.check(molecule, terms=(), settings=settings, backflow=('mu',), pseudo={1, 8}) == []
+
+
+def test_a_backflow_term_that_does_not_exist_is_named(molecule):
+    problems = correlation_data.check(molecule, terms=(), backflow=('eta', 'theta'))
+    assert any('theta' in problem for problem in problems), problems
+
+
+def test_asking_for_neither_block_is_refused(molecule):
+    assert any('empty file' in problem for problem in correlation_data.check(molecule, terms=(), backflow=()))
+
+
+def test_the_backflow_cutoff_defaults_are_reported(molecule):
+    notes = correlation_data.describe(molecule, terms=(), backflow=correlation_data.BACKFLOW_TERMS)
+    assert any('cutoff_mu 4.5' in note and 'cutoff_phi 4.5' in note for note in notes), notes
+    assert any('one line per spin-pair channel' in note for note in notes), notes
+
+
+def test_the_ae_cutoffs_block_is_left_to_casino(molecule):
+    text = correlation_data.blank(molecule, terms=(), backflow=('mu',))
+    assert 'AE CUTOFFS' not in text
+    assert any('AE CUTOFFS' in note for note in correlation_data.describe(molecule, terms=(), backflow=('mu',)))
+
+
+def test_the_committed_example_is_what_this_writes_for_the_same_pseudo_atom():
+    """That example is itself a blank backflow: a real one, and hand-written."""
+    calculation = EXAMPLES / 'ppotential_HF' / 'O' / 'HF' / 'aug-cc-pVQZ-CDF' / 'CBCS' / 'Backflow_emin'
+    geometry = correlation_data.read_geometry(calculation / 'gwfn.data')
+    pseudo = correlation_data.pseudo_species(calculation)
+    committed = block_lines((calculation / 'correlation.data').read_text(), 'BACKFLOW')
+    written = block_lines(correlation_data.backflow_block(geometry, title='No title given.', pseudo=pseudo), 'BACKFLOW')
+    # not to the column, and not to the wording of a line CASINO throws away: that file was
+    # typed by a person, and it differs from `write_pbackflow` by a double space and by calling
+    # one atom "Labels of the atoms". The reader reaches both by `read(io_bf,*)` with no variable
+    assert [normalized(line) for line in written] == [normalized(line) for line in committed]
+
+
+def normalized(line: str) -> str:
+    return ' '.join(line.split()).replace('Label of the atom in this set', 'Labels of the atoms in this set')

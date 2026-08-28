@@ -8,15 +8,15 @@ description: >
   tool surface (casino_run / casino_status / casino_stop / casino_list_jobs / casino_results /
   casino_prepare), why a running DMC job is read from the transient dmc.status and never from
   the VMC phase of its own out, how an input is written for a runtype and why the recipe tables
-  come from runqmc's own checks, how a blank Jastrow factor is written for a calculation that
-  has no correlation.data and why CASINO's own testrun is the only oracle for it, the guardrails
-  that stop a run from overwriting committed
-  reference data in examples/, why stopping and continuing a run go through haltqmc and runqmc
+  come from runqmc's own checks, how a blank Jastrow factor and backflow function are written
+  for a calculation that has no correlation.data and why CASINO's own testrun is the only oracle
+  for them, the guardrails that stop a run from overwriting committed reference data in
+  examples/, why stopping and continuing a run go through haltqmc and runqmc
   rather than through signals and file moves of our own, why the pid that matters is the
   launcher's session and not runqmc's, and the staged plan with what was accepted and what was
   rejected from the original proposal. Trigger on: MCP, casino-mcp, mcp server, job manager,
   job id, casino_run, casino_results, casino_prepare, dmc.status, input_file, correlation.data,
-  correlation_data, blank Jastrow, u/chi/f term, .mcp.json,
+  correlation_data, blank Jastrow, backflow, u/chi/f and eta/mu/phi terms, .mcp.json,
   FastMCP/MCPServer. See casino-run for how CASINO itself is driven and what its output files
   contain.
 ---
@@ -35,7 +35,8 @@ src/casino_mcp/
     settings.py    where CASINO is, where our state goes: the environment, and constants
     parse_out.py   CASINO `out` + `dmc.status` -> structured phases (no MCP, no dependencies)
     input_file.py  CASINO `input`: read, edit, and write one per runtype (same, text in/out)
-    correlation_data.py  a blank Jastrow (u/chi/f) for a calculation that has none
+    correlation_data.py  a blank Jastrow (u/chi/f) and backflow (eta/mu/phi) for a
+                         calculation that has neither
     jobs.py        job registry, state dir, process liveness
     runtime.py     prepare / start / status / stop / results. No MCP in this module
     server.py      MCPServer + tool definitions. A thin wrapper over runtime
@@ -43,7 +44,7 @@ src/casino_mcp/
     cli.py         `casino-mcp serve | config | run | status | stop | jobs | results |
                     prepare | parse`
 examples/          18 real calculations, a settings cover. The only tree the tests read
-tests/             262 unit tests, no CASINO needed; tests/integration is opt-in
+tests/             278 unit tests, no CASINO needed; tests/integration is opt-in
 tools/protocol_dump.py     the JSON-RPC by hand, no SDK. Read before adding a tool
 .mcp.json          registration for Claude Code (project scope)
 ```
@@ -208,10 +209,11 @@ text moves into `out`. Three consequences the parser encodes and a future change
   implies got three things wrong at once, and `tests/integration/test_recipes_check_only.py`
   — every recipe put to `runqmc --check-only` — is what caught them. Change a table, run it.
 
-**A blank Jastrow is written by us because nobody else writes one.** `use_jastrow : T` needs a
-`correlation.data`, an orbital code leaves none, and CASINO ships no utility for it — the
-manual says to copy an example and delete its numbers by hand. `correlation_data` writes it,
-under `casino_prepare(jastrow=[...])`. What holds it together:
+**A blank `correlation.data` is written by us because nobody else writes one.**
+`use_jastrow : T` and `backflow : T` each need a block in it, an orbital code leaves none, and
+CASINO ships no utility for either — the manual says to copy an example and delete its numbers
+by hand. `correlation_data` writes both, under
+`casino_prepare(jastrow=[...], backflow=[...])`. What holds it together:
 
 - **The atoms come from the orbital file, not from `input`.** `input` knows the electron count
   and never the nuclei. `read_geometry` reads only the header of `gwfn.data` / `stowfn.data`;
@@ -222,12 +224,22 @@ under `casino_prepare(jastrow=[...])`. What holds it together:
 - **Pseudo-atoms come out of the `*_pp.data` headers**, each of which states its atomic number,
   so no table of element symbols is needed and `cusp_chi=1` is refused exactly where
   `read_chi_term` errstops: a pseudo-atom, or a Slater-type basis.
+- **In backflow the same flag means the opposite thing, and is not a choice.** chi's cusp is a
+  preference, off unless asked for. mu's and phi's `Type of e-N cusp conditions` is a fact — 1
+  for a bare nucleus, 0 behind a pseudopotential — and `init_pbackflow` never checks it against
+  the pseudopotentials it loaded, so a wrong value is not an errstop but a wrong wave function.
+  Derived from the same `*_pp.data` headers, never defaulted.
+- **eta's cutoff is per spin-pair channel**, one line each, and `read_cutoff_eta` errstops if
+  the first is missing. Every other cutoff in either block is a single number.
 - **The oracle is `testrun : T`, not `--check-only`.** That script never opens
-  `correlation.data`; a test run makes CASINO read it, impose the constraints on the gamma
-  array and stop. `tests/integration/test_blank_jastrow.py`.
-- Finite systems only, and no BACKFLOW block: a periodic Jastrow wants a P term whose stars
-  come from `make_p_stars`, and a `backflow : T` input asking for a Jastrow-only file is
-  refused rather than half-written.
+  `correlation.data`; a test run makes CASINO read it, impose the constraints on the gamma and
+  phi arrays, count the free parameters and stop.
+  `tests/integration/test_blank_correlation.py`. It is what found the one rule the source does
+  not state plainly: an **all-electron phi set with `N_eN = 1` has no free parameters**, whatever
+  `N_ee` is, while a pseudo-atom set at the same order runs. `check_phi_parameters` refuses it.
+- Finite systems only: a periodic Jastrow wants a P term whose stars come from `make_p_stars`.
+  A keyword that is on with no block, and a block written for a keyword that is off, are both
+  refused — the two halves of the same mistake.
 
 **A dirty directory has two exits, not one.** `runqmc` appends to `out` and to the `.hist`
 files, so a permission to start in a directory that already holds them is not enough — the
@@ -312,10 +324,9 @@ Then, in order:
    install PyCasino, so the rules are restated here, from `runqmc`'s own checks rather than
    from that file, and pinned by an integration test against `runqmc --check-only`.
 7. ~~The blank `correlation.data`, so the *first* calculation of a chain can be prepared too.~~
-   *(done: `correlation_data.py`, `casino_prepare(jastrow=[...])`.)* Jastrow u/chi/f for finite
-   systems. A BACKFLOW block and the periodic P term are the two pieces deliberately left out —
-   the first is the same shape again (eta/mu/phi over the same sets), the second needs
-   `make_p_stars`.
+   *(done: `correlation_data.py`, `casino_prepare(jastrow=[...], backflow=[...])`.)* Jastrow
+   u/chi/f and backflow eta/mu/phi, for finite systems. The periodic P term is the one piece
+   deliberately left out: its stars of reciprocal lattice vectors need `make_p_stars`.
 
 Extracting the package before step 1 would have meant designing HTTP, SLURM and Tasks for
 users who did not exist yet, instead of having a working parser. Steps 5 and 6 were the same
@@ -448,10 +459,11 @@ The integration suite needs a real installation and is deselected by default:
   `runqmc --check-only`, one test per runtype. ~12 s. This is the only oracle for the writing
   half, and it is not decoration: the first run of it found three wrong entries in tables that
   had been reasoned out of the keyword documentation instead of read off `runqmc`.
-- `tests/integration/test_blank_jastrow.py` — every blank Jastrow put to a real CASINO with
-  `testrun : T`, three systems (all-electron gaussian, pseudo gaussian, Slater-type) against
-  three term combinations, plus the cutoff defaults CASINO chooses and the cusp it refuses.
-  ~25 s. `runqmc --check-only` cannot stand in: it never opens `correlation.data`.
+- `tests/integration/test_blank_correlation.py` — every blank Jastrow and backflow put to a
+  real CASINO with `testrun : T`: three systems (all-electron gaussian, pseudo gaussian,
+  Slater-type) against three term combinations of each, the cutoff defaults CASINO chooses, the
+  cusp type it is handed, and the two orders it refuses. ~55 s. `runqmc --check-only` cannot
+  stand in: it never opens `correlation.data`.
 - `tests/integration/test_client_smoke.py` — real stdio MCP against the installed
   `casino-mcp serve`: the tool schemas, the guardrail, a short VMC to completion, a long one
   stopped, and a job that outlives the server that started it.
