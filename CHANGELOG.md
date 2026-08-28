@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
-## [Unreleased]
+## [0.5.0] — 2026-08-28
+
+The calculation at the *start* of a chain can now be prepared too. Until this release the
+server could write the `input` for a run and read the answer out of it, but not the one file a
+first run cannot do without and no CASINO utility writes: the `correlation.data` holding the
+wave function parameters that are about to be optimised.
 
 ### Added
 

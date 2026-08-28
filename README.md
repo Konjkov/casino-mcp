@@ -14,8 +14,9 @@ result as structured data instead of shipping 4000 lines of text into a model's 
 including from a DMC run that is still going, which has no energy in `out` at all until its
 last block.
 
-> **Beta (0.4.0).** Everything below is tested against a real CASINO, and the recipes are
-> tested against `runqmc`'s own input check. Interfaces may still move before 1.0.
+> **Beta (0.5.0).** Everything below is tested against a real CASINO: the recipes against
+> `runqmc`'s own input check, and every file the wave function writer produces against a CASINO
+> test run. Interfaces may still move before 1.0.
 
 ## What it is, and what it is not
 
