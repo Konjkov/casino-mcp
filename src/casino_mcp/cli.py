@@ -8,6 +8,8 @@ whose state can only be inspected through the model that started it is not debug
     casino-mcp run <dir> -p 4          start a calculation
     casino-mcp status <job_id>
     casino-mcp stop <job_id>
+    casino-mcp results <job_id>        the physics of one job, live runs included
+    casino-mcp prepare <src> <dst> --runtype vmc_dmc -s dtdmc=0.005
     casino-mcp parse <dir-or-out>      an `out` file as JSON
 """
 
@@ -15,7 +17,7 @@ import argparse
 import json
 import sys
 
-from casino_mcp import __version__, parse_out, runtime, settings
+from casino_mcp import __version__, input_file, parse_out, runtime, settings
 
 
 def emit(data) -> int:
@@ -60,6 +62,25 @@ def cmd_run(args) -> int:
 
 def cmd_status(args) -> int:
     return emit(runtime.status(args.job_id))
+
+
+def keyword_pairs(settings_list) -> dict:
+    """`-s name=value` pairs off the command line; an empty value deletes the keyword."""
+    pairs = {}
+    for item in settings_list or ():
+        name, separator, value = item.partition('=')
+        if not separator:
+            raise SystemExit(f'--set expects name=value, got {item!r}')
+        pairs[name.strip()] = value if value != '' else None
+    return pairs
+
+
+def cmd_prepare(args) -> int:
+    return emit(runtime.prepare(args.source, args.dest, runtype=args.runtype, overrides=keyword_pairs(args.set)))
+
+
+def cmd_results(args) -> int:
+    return emit(runtime.results(args.job_id))
 
 
 def cmd_jobs(args) -> int:
@@ -111,6 +132,23 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser('status', help='state of one job')
     status.add_argument('job_id')
     status.set_defaults(func=cmd_status)
+
+    results = sub.add_parser('results', help="what one job's files say: the parsed `out`, and dmc.status if the run is still going")
+    results.add_argument('job_id')
+    results.set_defaults(func=cmd_results)
+
+    prepare = sub.add_parser('prepare', help='copy a calculation into a new directory and write the input for the next run')
+    prepare.add_argument('source', help='the calculation to start from')
+    prepare.add_argument('dest', help='the new directory; it must not already hold a calculation')
+    prepare.add_argument('--runtype', default='', help=f'fill in what this runtype needs ({", ".join(sorted(input_file.RECIPES))})')
+    prepare.add_argument(
+        '-s',
+        '--set',
+        action='append',
+        metavar='NAME=VALUE',
+        help='set one keyword; repeatable. An empty value (NAME=) deletes it.',
+    )
+    prepare.set_defaults(func=cmd_prepare)
 
     listing = sub.add_parser('jobs', help='every known job, newest first')
     listing.add_argument('-n', '--limit', type=int, default=20)

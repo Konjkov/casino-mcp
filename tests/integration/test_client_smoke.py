@@ -71,14 +71,28 @@ async def call(session, name, **arguments):
     return (await session.call_tool(name, arguments)).structured_content
 
 
-async def test_the_advertised_tools_are_the_four(example):
+async def test_the_advertised_tools_are_the_six(example):
     async with mcp_session() as session:
         listed = await session.list_tools()
 
-    assert {tool.name for tool in listed.tools} == {'casino_run', 'casino_status', 'casino_stop', 'casino_list_jobs'}
+    assert {tool.name for tool in listed.tools} == {
+        'casino_run',
+        'casino_status',
+        'casino_stop',
+        'casino_list_jobs',
+        'casino_results',
+        'casino_prepare',
+    }
     run = next(tool for tool in listed.tools if tool.name == 'casino_run')
     assert set(run.input_schema['properties']) == {'workdir', 'nproc', 'version', 'restart', 'resume', 'unlock'}
     assert run.input_schema['required'] == ['workdir']
+
+    # `overrides` is a mapping whose values may be null -- that is what deletes a keyword -- and
+    # the schema has to say so, or a client rejects the call before it reaches us.
+    prepare = next(tool for tool in listed.tools if tool.name == 'casino_prepare')
+    assert prepare.input_schema['required'] == ['source', 'dest']
+    overrides = prepare.input_schema['properties']['overrides']
+    assert {'type': 'null'} in overrides['anyOf'][0]['additionalProperties']['anyOf']
 
 
 async def test_committed_reference_data_is_refused_over_the_protocol(example):

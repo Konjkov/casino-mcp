@@ -12,11 +12,11 @@ import pytest
 
 from casino_mcp import runtime, server, settings
 
-TOOLS = {'casino_run', 'casino_status', 'casino_stop', 'casino_list_jobs'}
+TOOLS = {'casino_run', 'casino_status', 'casino_stop', 'casino_list_jobs', 'casino_results', 'casino_prepare'}
 
 
-def test_the_tool_surface_is_exactly_these_four():
-    """Stage 1 is the control plane. Anything reading physics out of `out` is the next stage."""
+def test_the_tool_surface_is_exactly_these_six():
+    """The control plane, the tool that reads physics out of the files, and the one that writes an input."""
     assert {name for name in dir(server) if name.startswith('casino_')} == TOOLS
 
 
@@ -62,6 +62,8 @@ def test_tools_are_registered_with_the_server():
         ('casino_status', 'status', {'job_id': 'j'}),
         ('casino_stop', 'stop', {'job_id': 'j'}),
         ('casino_list_jobs', 'listing', {}),
+        ('casino_results', 'results', {'job_id': 'j'}),
+        ('casino_prepare', 'prepare', {'source': '/tmp/a', 'dest': '/tmp/b'}),
     ],
 )
 def test_each_tool_only_delegates(monkeypatch, tool, function, arguments):

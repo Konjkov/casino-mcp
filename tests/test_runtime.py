@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from casino_mcp import jobs, runtime, settings
+from casino_mcp import input_file, jobs, runtime, settings
 
 # The three ways a CASINO run can end, as `out` records them. Only the markers matter here:
 # `Started` opens every run in the file, and the other two lines say how the last one ended.
@@ -194,6 +194,7 @@ def test_restart_deletes_what_the_earlier_run_left_and_nothing_else(workdir, fak
         '.out_proc0',
         'vmc.hist',
         'dmc.hist',
+        'dmc.status',  # a killed DMC run leaves one; parse_out would read it as current
         'vmc.hist.2',
         'config.in',
         'config.out_fixed',
@@ -393,6 +394,171 @@ def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
 
     listed = runtime.listing(limit=2)['jobs']
     assert [job['job_id'] for job in listed] == sorted(ids, reverse=True)[:2]
+
+
+# --- results -------------------------------------------------------------------------
+
+
+def dmc_job(workdir, fixture):
+    """A finished job record over a copy of a fixture calculation. No launcher, no CASINO."""
+    for source in fixture.iterdir():
+        shutil.copy2(source, workdir / source.name)
+    store = jobs.JobStore()
+    job_id, job_dir, meta = jobs.create(['runqmc', '-p', '4'], workdir, 4, 'opt')
+    meta = jobs.record_pid(job_dir, meta, os.getpid())
+    store.add(meta)
+    jobs.write_json(job_dir / 'status.json', {'exit_code': 0, 'finished': jobs.now(), 'finished_epoch': time.time()})
+    return job_id, store
+
+
+def test_results_of_an_unknown_job():
+    assert 'unknown job' in runtime.results('nope')['error']
+
+
+def test_results_before_casino_has_written_anything(workdir, out_file):
+    """A job whose runqmc has not produced an `out` yet reports that, and says where its own log is."""
+    job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
+    (workdir / 'out').unlink()
+    report = runtime.results(job_id, store)
+    assert 'no `out`' in report['error']
+    assert report['job_id'] == job_id
+    assert 'job directory' in report['note']
+
+
+def test_results_of_a_running_dmc_job_come_from_dmc_status(workdir, out_file):
+    """The point of the tool: a DMC run that has not ended still has an answer, and it is not the VMC one."""
+    job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
+    report = runtime.results(job_id, store)
+
+    assert report['job_id'] == job_id
+    assert report['workdir'] == str(workdir)
+    assert report['complete'] is False
+    assert report['result']['source'] == 'dmc.status'
+    assert report['result']['energy']['value'] == -14.667081101447
+    assert report['dmc_status']['path'] == str(workdir / 'dmc.status')
+    assert report['result']['energy']['value'] != report['phases'][0]['energy']['value']
+
+
+def test_results_without_a_dmc_status_read_out_alone(workdir, out_file):
+    """The same job once CASINO has deleted the file: the numbers are then in `out` itself."""
+    job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
+    (workdir / 'dmc.status').unlink()
+    report = runtime.results(job_id, store)
+
+    assert 'dmc_status' not in report
+    assert report['result']['value'] is None
+    assert 'no DMC energy exists yet' in report['result']['reason']
+
+
+def test_results_carry_the_job_state_so_the_numbers_can_be_judged(workdir, out_file):
+    job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
+    report = runtime.results(job_id, store)
+    assert report['status'] == 'finished'
+    assert report['nproc'] == 4
+    assert report['exit_code'] == 0
+    assert report['path'] == str(workdir / 'out')  # every number is checkable against a file
+
+
+# --- preparing the next calculation ---------------------------------------------------
+
+
+@pytest.fixture
+def calculation(tmp_path, out_file):
+    """A directory that holds a real vmc_dmc calculation, products and all."""
+    path = tmp_path / 'source'
+    path.mkdir()
+    for source in out_file('dmc_running').parent.iterdir():
+        shutil.copy2(source, path / source.name)
+    (path / 'stowfn.data').write_text('orbitals\n')
+    (path / 'correlation.data').write_text('a Jastrow factor\n')
+    (path / 'parameters.casl').write_text('GEMINAL:\n')
+    (path / 'config.out').write_text('where the run left off\n')
+    return path
+
+
+def test_prepare_copies_the_inputs_and_none_of_the_products(calculation, tmp_path):
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'next'))
+    assert set(prepared['copied']) == {'input', 'stowfn.data', 'correlation.data', 'parameters.casl'}
+    for product in ('out', 'dmc.status', 'config.out'):
+        assert not (tmp_path / 'next' / product).exists(), f'{product} is what a run left, not what it was given'
+
+
+def test_prepare_carries_the_configurations_a_dmc_only_runtype_starts_from(calculation, tmp_path):
+    """A finished run leaves them as `config.out`; `config.in` is the name they are read under."""
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'dmc'), runtype='dmc_dmc')
+    assert 'config.out -> config.in' in prepared['copied']
+    assert (tmp_path / 'dmc' / 'config.in').read_text() == (calculation / 'config.out').read_text()
+    assert not (tmp_path / 'dmc' / 'config.out').exists(), 'the new run has not left off anywhere yet'
+
+
+def test_prepare_carries_no_configurations_into_a_run_that_starts_fresh(calculation, tmp_path):
+    """Into a vmc_dmc directory a stray config.out would continue the old run instead of starting."""
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'again'))
+    assert not any('config' in name for name in prepared['copied'])
+    assert not (tmp_path / 'again' / 'config.in').exists()
+
+
+def test_prepare_leaves_the_calculation_it_copied_from_alone(calculation, tmp_path):
+    before = (calculation / 'input').read_text()
+    runtime.prepare(str(calculation), str(tmp_path / 'next'), overrides={'dtdmc': '0.005'})
+    assert (calculation / 'input').read_text() == before
+
+
+def test_prepare_fills_in_what_a_new_runtype_needs(calculation, tmp_path):
+    """Switching runtype is one keyword in the file and a dozen in what CASINO then demands."""
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'opt'), runtype='vmc_opt', overrides={'opt_backflow': 'F'})
+    written = input_file.read(tmp_path / 'opt' / 'input')['keywords']
+    assert prepared['runtype'] == 'vmc_opt'
+    assert written['opt_method'] == input_file.RECIPES['vmc_opt']['opt_method']
+    assert written['neu'] == '2', 'what the source already said survives'
+    assert written['dtdmc'] == '0.02083', 'and so does what no one asked to change'
+    assert any('no DMC phase' in warning for warning in prepared['warnings'])
+
+
+def test_prepare_refuses_before_writing_anything(calculation, tmp_path):
+    """A refusal must leave no half-made directory behind."""
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'next'), overrides={'vmc_nconfig_write': '16'})
+    assert 'does not describe a run CASINO can do' in prepared['error']
+    assert any('below dmc_target_weight' in problem for problem in prepared['problems'])
+    assert not (tmp_path / 'next').exists()
+
+
+def test_prepare_refuses_a_directory_that_already_holds_a_calculation(calculation, tmp_path):
+    (tmp_path / 'next').mkdir()
+    (tmp_path / 'next' / 'input').write_text('runtype : vmc\n')
+    error = runtime.prepare(str(calculation), str(tmp_path / 'next'))['error']
+    assert 'already exists and is not empty' in error
+
+
+def test_prepare_refuses_to_edit_the_source_in_place(calculation):
+    assert 'same directory' in runtime.prepare(str(calculation), str(calculation))['error']
+
+
+def test_prepare_names_what_only_the_caller_can_supply(tmp_path):
+    source = tmp_path / 'bare'
+    source.mkdir()
+    (source / 'input').write_text('runtype : vmc\n')
+    prepared = runtime.prepare(str(source), str(tmp_path / 'next'), runtype='vmc_dmc')
+    assert 'neu, ned, atom_basis_type' in prepared['error']
+    assert prepared['fix'] == 'pass them in overrides'
+
+
+def test_prepare_refuses_an_unknown_runtype(calculation, tmp_path):
+    error = runtime.prepare(str(calculation), str(tmp_path / 'next'), runtype='dmc_md')['error']
+    assert 'no recipe for runtype dmc_md' in error and 'vmc_dmc' in error
+
+
+def test_prepare_says_which_keywords_it_changed(calculation, tmp_path):
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'next'), overrides={'dtdmc': '0.005', 'dmc_target_weight': '1024.0'})
+    assert prepared['changed'] == {'dtdmc': '0.005'}, 'a value that was already what was asked for did not change'
+
+
+def test_a_prepared_directory_is_one_casino_run_will_accept(calculation, tmp_path, fake_runqmc, python_path):
+    """The two halves meet here: what prepare writes is what start is willing to run."""
+    fake_runqmc()
+    prepared = runtime.prepare(str(calculation), str(tmp_path / 'next'), overrides={'dtdmc': '0.005'})
+    assert 'error' not in prepared
+    assert 'error' not in runtime.start(prepared['workdir'])
 
 
 # --- defaults ------------------------------------------------------------------------

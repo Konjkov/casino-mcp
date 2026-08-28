@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from casino_mcp import jobs, settings
+from casino_mcp import input_file, jobs, parse_out, settings
 
 LOCK_NAME = '.runqmc.lock'
 UPDATE_HELPER = 'haltqmc_update_input'  # the program `haltqmc -u` rewrites `input` with
@@ -53,6 +53,10 @@ DEBRIS = (
     'vmc.hist',
     'dmc.hist',
     '*.hist.[0-9]*',
+    # Only an orderly end deletes this one, so a killed DMC run leaves it behind. It has to go
+    # with the rest: `parse_out` reads it as the current estimate, and a stale one left next to
+    # a fresh `out` would answer for a calculation that no longer exists.
+    parse_out.STATUS_NAME,
     'config.in',  # continuation state: deleting it is what makes this a restart and not a resume
     'config.out',
     'config.in_*',  # _fixed / _nofixed, written by a fixed-node run
@@ -210,6 +214,137 @@ def check_workdir(path: Path, restart: bool, resume: bool, unlock: bool) -> str:
     return ''
 
 
+# What a calculation is *given*, as opposed to what a run leaves behind (DEBRIS). Named for
+# the same reason DEBRIS is: the wave function, the pseudopotentials and a hand-edited
+# `correlation.data` share a directory with the products, and no glob separates them.
+#
+# `config.in` is on the list because for a DMC-only or `opt` runtype it is an input like any
+# other -- the population an earlier VMC wrote. `config.out` is not: it is where the run being
+# copied from left off, and carrying it over would make the new calculation continue the old
+# one by accident.
+INPUTS = (
+    'input',
+    'gwfn.data',
+    'stowfn.data',
+    'pwfn.data',
+    'bwfn.data',
+    'bwfn.data.bin',
+    'awfn.data',
+    'dwfn.data',
+    'correlation.data',
+    'parameters.casl',
+    '*_pp.data',
+    'expot.data',
+    'mpc.data',
+    'config.in',
+)
+
+
+def copy_inputs(source: Path, dest: Path) -> list[str]:
+    """Copy what the calculation reads, and nothing a run wrote. Symlinks are followed.
+
+    An orbital file in an examples tree is usually a symlink to one shared by a dozen
+    calculations; copying the link would leave it dangling one directory further away, so the
+    content is copied instead and the new directory stands on its own.
+    """
+    copied = []
+    for pattern in INPUTS:
+        for path in sorted(source.glob(pattern)):
+            if path.is_file():
+                shutil.copy2(path, dest / path.name, follow_symlinks=True)
+                copied.append(path.name)
+    return copied
+
+
+def carry_configurations(source: Path, dest: Path, keywords: dict) -> str:
+    """Bring the source's `config.out` over as `config.in`, when the new runtype needs it.
+
+    A `dmc_dmc` or `opt` run starts from a population an earlier run wrote, and where that
+    population sits is `config.out` -- `config.in` is the name it has *while being read*, and a
+    finished run leaves the other one. `runqmc` renames it in place for exactly this reason;
+    doing the rename here would edit the calculation being copied from, so the copy is made
+    under the name the new run will read, and the name change is reported in `copied`.
+
+    Not done when the runtype does not ask for configurations: there, a stray `config.out`
+    would silently make the new calculation continue the old one instead of starting.
+    """
+    runtype = keywords.get('runtype', '').strip()
+    if runtype not in input_file.NEEDS_CONFIGS and input_file.truthy(keywords.get('newrun', 'T')):
+        return ''
+    if (dest / 'config.in').is_file() or not (source / 'config.out').is_file():
+        return ''
+    shutil.copy2(source / 'config.out', dest / 'config.in', follow_symlinks=True)
+    return 'config.out -> config.in'
+
+
+def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str | None] | None = None) -> dict[str, Any]:
+    """Copy a calculation into a new directory and write the `input` the next run needs.
+
+    This is the "change a parameter, get a new directory" step, and it is a copy rather than an
+    edit on purpose: a result whose input was overwritten in place cannot be reproduced, and
+    every guardrail in `start` exists because a directory that already holds a run is not a
+    place to put another one.
+
+    `runtype` fills in the keywords that runtype requires and the source input does not have --
+    switching a `vmc` calculation to `vmc_dmc` is one keyword in the file and eight more that
+    CASINO then demands. What the source already says is kept, so the electron count, the basis
+    and any hand tuning survive; `overrides` wins over both. A value of null deletes a keyword,
+    and a value with newlines in it is written as a `%block`.
+
+    Nothing is written unless the result would run: the keywords are checked for the
+    combinations CASINO only rejects at run time, and the directory for the files the input
+    tells it to read.
+    """
+    source_path, dest_path = Path(source).expanduser().resolve(), Path(dest).expanduser().resolve()
+    if not (source_path / 'input').is_file():
+        return {'error': f'no CASINO `input` in {source_path}: there is nothing to copy from'}
+    if source_path == dest_path:
+        return {'error': 'source and dest are the same directory: preparing a run never edits the calculation it came from'}
+    if dest_path.exists() and any(dest_path.iterdir()):
+        return {'error': f'{dest_path} already exists and is not empty. One directory is one calculation; name a new one.'}
+    forbidden = settings.forbidden(dest_path)
+    if forbidden:
+        return {'error': f'{dest_path} is under {forbidden}, which $CASINO_MCP_FORBID lists. No override exists; prepare the run elsewhere.'}
+
+    current = input_file.read(source_path / 'input')
+    values = {name.lower(): value for name, value in (overrides or {}).items()}
+    if runtype:
+        if runtype not in input_file.RECIPES:
+            return {'error': f'no recipe for runtype {runtype}. Known: {", ".join(sorted(input_file.RECIPES))}'}
+        # Blocks count as present too: an `opt_plan` in the file is what `opt_cycles` would
+        # otherwise be, and adding both would leave CASINO to resolve a contradiction silently.
+        present = {**current['keywords'], **dict.fromkeys(current['blocks'], '')}
+        filled, missing = input_file.recipe(runtype, values, present=present)
+        if missing:
+            return {
+                'error': f'runtype {runtype} needs {", ".join(missing)}, which {source_path / "input"} does not set and no default can supply',
+                'fix': 'pass them in overrides',
+            }
+        values = filled
+    text = input_file.apply(current['text'], values) if values else current['text']
+    keywords, blocks = input_file.parse_text(text)
+
+    errors = input_file.check(keywords, blocks) + input_file.check_files(source_path, keywords)
+    if errors:
+        return {'error': 'the input this would write does not describe a run CASINO can do', 'problems': errors, 'wrote': None}
+
+    dest_path.mkdir(parents=True, exist_ok=True)
+    copied = copy_inputs(source_path, dest_path)
+    carried = carry_configurations(source_path, dest_path, keywords)
+    if carried:
+        copied.append(carried)
+    (dest_path / 'input').write_text(text)
+    changed = {name: value for name, value in values.items() if current['keywords'].get(name, object()) != value}
+    return {
+        'workdir': str(dest_path),
+        'source': str(source_path),
+        'runtype': keywords.get('runtype', '').strip(),
+        'copied': copied,
+        'changed': changed,
+        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords),
+    }
+
+
 def build_command(runqmc: str, nproc: int, version: str, unlock: bool, resume: bool = False, extra: tuple[str, ...] = ()) -> list[str]:
     command = [runqmc, '-p', str(nproc)]
     if version != settings.VERSION:
@@ -300,6 +435,51 @@ def status(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
         return store.status(job_id)
     except KeyError:
         return {'error': f'unknown job {job_id}'}
+
+
+def results(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
+    """What one job's files say: the parsed `out`, and the live estimate beside it.
+
+    A job, not a file: the state of the run is what tells the caller whether these numbers are
+    final, and a job knows where its directory is after the cwd that started it is gone. The
+    physics all comes from `parse_out`, which reads `out` and, if the run is a DMC one that has
+    not ended, the `dmc.status` next to it -- so a running calculation answers with the estimate
+    as of its last block instead of with nothing.
+    """
+    store = store or jobs.JobStore()
+    try:
+        state = store.status(job_id)
+    except KeyError:
+        return {'error': f'unknown job {job_id}'}
+
+    workdir = Path(state['workdir'])
+    out = workdir / 'out'
+    if not out.is_file():
+        return {
+            'error': f'no `out` in {workdir}',
+            'job_id': job_id,
+            'status': state['status'],
+            'note': (
+                'runqmc writes `out` once CASINO starts, so a job that has only just been launched, or one that '
+                'failed in runqmc itself, has none. Its own log is in the job directory.'
+            ),
+        }
+    try:
+        parsed = parse_out.parse_out(out)
+    except OSError as e:
+        return {'error': f'cannot read {out}: {e}', 'job_id': job_id, 'status': state['status']}
+
+    report = {key: state[key] for key in ('job_id', 'status', 'workdir', 'nproc', 'started', 'runtime') if key in state}
+    for key in ('exit_code', 'finished'):
+        if key in state:
+            report[key] = state[key]
+    report.update(parsed)
+    if state['status'] == 'running' and parsed['complete']:
+        # The launcher is still up while runqmc finishes its epilogue; the physics is done.
+        report['note'] = (
+            'CASINO has written its timing report, so these numbers are final; the job is still marked running because runqmc has not exited yet'
+        )
+    return report
 
 
 def listing(limit: int = 20, store: jobs.JobStore | None = None) -> dict[str, Any]:

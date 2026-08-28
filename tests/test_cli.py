@@ -79,6 +79,22 @@ def test_status_of_an_unknown_job_exits_nonzero(capsys):
     assert json.loads(captured.out) == {'error': 'unknown job nope'}
 
 
+def test_results_of_an_unknown_job_exits_nonzero(capsys):
+    code, captured = run(capsys, 'results', 'nope')
+    assert code == 1
+    assert json.loads(captured.out) == {'error': 'unknown job nope'}
+
+
+def test_parse_of_a_running_dmc_directory_reads_dmc_status_too(capsys, out_file):
+    """`parse` is the file-level twin of `results`, and must not disagree with it about the energy."""
+    code, captured = run(capsys, 'parse', str(out_file('dmc_running').parent))
+    parsed = json.loads(captured.out)
+    assert code == 0
+    assert parsed['complete'] is False
+    assert parsed['result']['source'] == 'dmc.status'
+    assert parsed['dmc_status']['energy']['value'] == -14.667081101447
+
+
 def test_parse_prints_a_structured_out_file(capsys, out_file):
     code, captured = run(capsys, 'parse', str(out_file('vmc_single')))
     parsed = json.loads(captured.out)
