@@ -1,4 +1,4 @@
-"""Structured data out of a CASINO `out` file.
+"""Structured data out of a CASINO `out` file, and out of the `dmc.status` beside it.
 
 A path in, a dict out: no MCP, no dependencies, nothing invented. Every number carries the
 1-based line it was read from, and anything CASINO did not print comes back as None with a
@@ -8,6 +8,14 @@ An `out` file is a sequence of phases, not one result: `vmc_opt` writes a VMC an
 OPTIMIZATION phase per cycle, `vmc_dmc` writes VMC, DMC equilibration and DMC statistics
 accumulation. So the phases are returned as a list, and `result` points at the last one that
 carries an energy.
+
+**A running DMC calculation has no energy in `out` at all.** The mixed estimators are written
+once, at the very end of the run; until then the only place the current estimate exists is
+`dmc.status`, which CASINO rewrites at the end of every statistics block and deletes when the
+run finishes -- the same text is copied into `out` at that moment, so nothing is lost, but a
+job that is still running is read from `dmc.status` or not at all. It is written by
+`write_dmc_status` in `dmc.f90`, which is also what writes the `out` section, so the two have
+the same shape and `parse_dmc_status` and `parse_dmc` share their parser.
 
 The single derived quantity is the sample-variance error, which CASINO prints only for a
 multi-block run and which is otherwise taken from the one block, exactly as `envmc` does.
@@ -45,6 +53,20 @@ MIXED = (
     ('ee_interaction', 'e-e interac.'),
     ('ei_interaction', 'e-i interaction'),
 )
+
+MIXED_HEADING = 'Mixed estimators of the energies'
+UNITS_PREFIX = '[All energies given in '
+STATUS_NAME = 'dmc.status'
+
+# How CASINO says the error bar it just printed cannot be trusted. The first is what a phase
+# with too little data gets, the second what a reblocking that has not plateaued gets; both
+# are wordwrapped, so only the opening of the message is matched.
+UNRELIABLE = ('Reblocking not converged', 'Bad reblock convergence')
+
+REBLOCK_SCALARS = (('mean', 'mean:'), ('stderr', 'stderr:'), ('errfac', 'errfac:'), ('n_corr', 'N_corr:'))
+REBLOCK_DUMP = 'Dumping reblock data for energy:'
+REBLOCK_HEADER = 'Block len'
+REBLOCK_BEST = '*** BEST ***'
 
 EFFICIENCY = (
     ('correlation_length', 'Int corr length (steps)'),
@@ -112,6 +134,91 @@ def mean(values):
     return sum(numbers) / len(numbers)
 
 
+def parse_reblock(lines, start, end) -> dict | None:
+    """The reblock dump: the four summary rows and the block-length table under them.
+
+    This is where the error bar CASINO quotes actually comes from -- it is the row marked
+    `*** BEST ***`, and whether the rows above it have flattened out is the whole question of
+    whether the error bar means anything. The table is small (a dozen rows) and no substitute
+    exists at the `out` level, so it is returned whole rather than summarised.
+
+    **Whether it is printed at all differs between the two places it appears.** The DMC mixed
+    estimators always carry it (`dmc.f90` calls `reblock_dump` unconditionally). A VMC
+    `FINAL RESULT` carries it only when the reblocking did *not* converge -- `vmc.f90` prints it
+    inside the `derr > 0.1*err` branch, right after the "Bad reblock convergence" line -- so in
+    a VMC phase it is a diagnostic that appears exactly when the error bar is in doubt, and its
+    absence is the good case. Nothing downstream may treat it as a field that is always there.
+    """
+    first = next((i for i in range(start, end) if lines[i].strip().startswith(REBLOCK_DUMP)), None)
+    if first is None:
+        return None
+    dump: dict = {'line': first + 1, 'rows': []}
+    in_table = False
+    for i in range(first + 1, end):
+        stripped = lines[i].strip()
+        for key, label in REBLOCK_SCALARS:
+            if stripped.startswith(label):
+                values = rhs_values(stripped)
+                dump[key] = value(values[0], i, values[1] if len(values) > 1 else None)
+        if stripped.startswith(REBLOCK_HEADER):
+            in_table = True
+            continue
+        if in_table:
+            values = rhs_values(stripped)
+            if len(values) < 3:
+                break  # the closing rule of dashes, or whatever follows the table
+            length, stderr, error_in_error = values[:3]
+            if length is None or stderr is None or error_in_error is None:
+                break
+            row = {'length': int(length), 'stderr': stderr, 'error_in_error': error_in_error, 'line': i + 1}
+            if REBLOCK_BEST in stripped:
+                row['best'] = True
+                dump['best_block_length'] = row['length']
+            dump['rows'].append(row)
+    return dump
+
+
+def parse_mixed(lines, start, end) -> dict:
+    """The `Mixed estimators of the energies` section, wherever it was found.
+
+    One parser for two files: `write_dmc_status` in CASINO's `dmc.f90` writes this text into
+    `dmc.status` after every statistics block, and the identical text into `out` at the end of
+    the run. A second parser would be a second thing to keep in step with CASINO.
+    """
+    parsed: dict = {
+        'energy': missing('no mixed estimators in this section'),
+        'variance': missing('no statistical-efficiency analysis in this section'),
+    }
+    heading = next((i for i in range(start, end) if lines[i].strip().startswith(MIXED_HEADING)), None)
+    if heading is not None:
+        parsed['mixed_estimators'] = {}
+        for i in range(heading, end):
+            stripped = lines[i].strip()
+            if stripped.startswith(UNITS_PREFIX):
+                parsed['units'] = value(stripped[len(UNITS_PREFIX) :].rstrip(']'), i)
+            for key, label in MIXED:
+                if stripped.startswith(label) and '+/-' in stripped:
+                    values = rhs_values(lines[i])
+                    parsed['mixed_estimators'][key] = value(values[0], i, values[1] if len(values) > 1 else None)
+        parsed['energy'] = parsed['mixed_estimators'].get('total_energy', parsed['energy'])
+    for i in range(start, end):
+        stripped = lines[i].strip()
+        for key, label in EFFICIENCY:
+            if stripped.startswith(label):
+                values = rhs_values(lines[i])
+                parsed[key] = value(values[0], i, values[1] if len(values) > 1 else None)
+        if stripped.startswith('Number of data points collected'):
+            parsed['data_points'] = measured(lines, i)
+        if stripped.startswith(UNRELIABLE):
+            parsed['reblock_converged'] = False
+    reblock = parse_reblock(lines, start, end)
+    if reblock is not None:
+        parsed['reblock'] = reblock
+    if heading is not None:
+        parsed.setdefault('reblock_converged', True)
+    return parsed
+
+
 def split_phases(lines):
     phases = []
     for i, line in enumerate(lines):
@@ -158,7 +265,7 @@ def parse_vmc_block(lines, start, end):
 
 
 def parse_final_result(lines, start, end, blocks):
-    result = {'energy': missing('no FINAL RESULT block in this phase'), 'variance': missing('no FINAL RESULT block in this phase')}
+    result: dict = {'energy': missing('no FINAL RESULT block in this phase'), 'variance': missing('no FINAL RESULT block in this phase')}
     first = next((i for i in range(start, end) if lines[i].strip().startswith('FINAL RESULT:')), None)
     if first is None:
         return result
@@ -178,9 +285,12 @@ def parse_final_result(lines, start, end, blocks):
             if error is None and len(blocks) == 1:
                 result['variance']['error'] = blocks[0].get('variance', {}).get('error')
                 result['variance']['derived'] = 'error taken from the only block, as envmc does'
-        if stripped.startswith('Bad reblock convergence'):
+        if stripped.startswith(UNRELIABLE):
             result['reblock_converged'] = False
     result.setdefault('reblock_converged', True)
+    reblock = parse_reblock(lines, first, end)
+    if reblock is not None:
+        result['reblock'] = reblock
     return result
 
 
@@ -221,29 +331,40 @@ def parse_dmc_block(lines, start, end):
 def parse_dmc(lines, phase):
     start, end = phase['start'], phase['end']
     blocks = [parse_dmc_block(lines, *bounds) for bounds in block_bounds(lines, start, end)]
-    parsed = {'blocks': blocks, 'nblock': len(blocks), 'energy': missing('no mixed estimators in this phase')}
-    mixed = next((i for i in range(start, end) if lines[i].strip().startswith('Mixed estimators of the energies')), None)
-    if mixed is not None:
-        parsed['mixed_estimators'] = {}
-        for i in range(mixed, end):
-            stripped = lines[i].strip()
-            for key, label in MIXED:
-                if stripped.startswith(label) and '+/-' in stripped:
-                    values = rhs_values(lines[i])
-                    parsed['mixed_estimators'][key] = value(values[0], i, values[1] if len(values) > 1 else None)
-        parsed['energy'] = parsed['mixed_estimators'].get('total_energy', parsed['energy'])
-    parsed['variance'] = missing('no statistical-efficiency analysis in this phase')
-    for i in range(start, end):
-        stripped = lines[i].strip()
-        for key, label in EFFICIENCY:
-            if stripped.startswith(label):
-                values = rhs_values(lines[i])
-                parsed[key if key != 'variance' else 'variance'] = value(values[0], i, values[1] if len(values) > 1 else None)
-        if stripped.startswith('Number of data points collected'):
-            parsed['data_points'] = measured(lines, i)
+    parsed = {'blocks': blocks, 'nblock': len(blocks)}
+    parsed.update(parse_mixed(lines, start, end))
+    if parsed['energy']['value'] is None:
+        # Not a gap in the parser: CASINO writes the mixed estimators once, when the run ends.
+        # While it runs they exist only in `dmc.status`, which parse_dmc_status reads.
+        parsed['energy'] = missing('no mixed estimators in this phase: CASINO writes them when the run ends, and until then they are in dmc.status')
     if blocks:
         parsed['acceptance'] = derived(mean([b.get('acceptance', missing('')) for b in blocks]), f'mean over {len(blocks)} blocks')
     return parsed
+
+
+def parse_dmc_status(path) -> dict:
+    """The current best estimate of a DMC run, from the `dmc.status` file of a live run.
+
+    The file exists only between the end of the first statistics block and the end of the run,
+    and holds the complete evaluation as it would be written if the run stopped now. It is
+    rewritten whole after every block (`status='replace'`), so what is read here is a
+    consistent snapshot and never a half-written one. `iaccum` gates it: an equilibration-only
+    run, a run still equilibrating, and a `do_twist` run never have one, and the
+    statistical-efficiency section needs `popstats : T`.
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / STATUS_NAME
+    lines = path.read_text(errors='replace').split('\n')
+    return {
+        'path': str(path.resolve()),
+        'kind': 'dmc_status',
+        **parse_mixed(lines, 0, len(lines)),
+        'note': (
+            'the estimate as of the last completed statistics block; CASINO rewrites this file after every '
+            'block and deletes it when the run ends, copying the same text into `out`'
+        ),
+    }
 
 
 def parse_opt(lines, phase):
@@ -277,7 +398,7 @@ def parse_opt(lines, phase):
 
 
 def parse_header(lines, until):
-    header = {'keywords': {}}
+    header: dict = {'keywords': {}}
     if lines and lines[0].startswith('CASINO'):
         header['version'] = value(lines[0].strip(), 0)
     for i in range(min(until, len(lines))):
@@ -304,13 +425,13 @@ def parse_messages(lines):
     return [{'line': i + 1, 'text': line.strip()} for i, line in enumerate(lines) if line.strip().startswith(markers)]
 
 
-def parse_out(path):
+def parse_out(path) -> dict:
     path = Path(path)
     if path.is_dir():
         path = path / 'out'
     lines = path.read_text(errors='replace').split('\n')
     phases = split_phases(lines)
-    parsed = {'path': str(path.resolve())}
+    parsed: dict = {'path': str(path.resolve())}
     parsed.update(parse_header(lines, phases[0]['start'] if phases else len(lines)))
 
     parsers = {'vmc': parse_vmc, 'opt': parse_opt, 'dmc_equil': parse_dmc, 'dmc_stats': parse_dmc}
@@ -337,9 +458,27 @@ def parse_out(path):
     ):
         parsed.setdefault(key, missing(reason))
 
+    # A DMC run that has not reached its end has no energy in `out`, but the estimate it would
+    # print if it stopped now is in `dmc.status` next to it -- while it runs, and also after it
+    # was killed, since only an orderly end deletes that file. Reading it here rather than in
+    # each caller is what keeps `result` from pointing at the VMC phase of a running DMC job:
+    # that number is the trial wave function's energy, not the calculation's.
+    status_file = path.parent / STATUS_NAME
+    if status_file.is_file():
+        parsed['dmc_status'] = parse_dmc_status(status_file)
+
     final = next((p for p in reversed(parsed['phases']) if p.get('energy', {}).get('value') is not None), None)
-    if final is None:
+    if 'dmc_status' in parsed:
+        current = parsed['dmc_status']
+        parsed['result'] = {'source': STATUS_NAME, 'kind': 'dmc_status', 'energy': current['energy'], 'variance': current['variance']}
+    elif final is None:
         parsed['result'] = missing('no phase in this file reports an energy')
+    elif not parsed['complete'] and parsed['phases'][-1]['kind'].startswith('dmc') and final['kind'] != parsed['phases'][-1]['kind']:
+        parsed['result'] = missing(
+            f'this run is in its {parsed["phases"][-1]["kind"]} phase and no DMC energy exists yet: CASINO writes the mixed '
+            f'estimators when the run ends, and dmc.status only from the end of the first statistics block. '
+            f"The energy in phase {parsed['phases'].index(final)} is the {final['kind']} one and is not this run's result."
+        )
     else:
         parsed['result'] = {'phase': parsed['phases'].index(final), 'kind': final['kind'], 'energy': final['energy'], 'variance': final['variance']}
     parsed['messages'] = parse_messages(lines)

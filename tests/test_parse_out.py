@@ -16,7 +16,7 @@ and against a freshly built CASINO. This suite is the part that runs anywhere, i
 
 import pytest
 
-from casino_mcp.parse_out import parse_out
+from casino_mcp.parse_out import parse_dmc_status, parse_out
 
 pytestmark = pytest.mark.filterwarnings('error')
 
@@ -117,6 +117,88 @@ def test_bad_reblock_convergence_is_reported_not_hidden(out_file):
     parsed = parse_out(out_file('vmc_dmc'))
     assert parsed['messages'] == [{'line': 412, 'text': 'Bad reblock convergence - probably not enough data samples.'}]
     assert parsed['phases'][0]['reblock_converged'] is False
+
+
+def test_reblock_dump_is_read_and_the_best_row_marked(out_file):
+    """The quoted error bar is one row of that table; which row, and whether it plateaued, is the point."""
+    stats = parse_out(out_file('vmc_dmc'))['phases'][2]
+    dump = stats['reblock']
+    assert dump['stderr']['value'] == stats['energy']['error']
+    assert dump['best_block_length'] == 256
+    best = [row for row in dump['rows'] if row.get('best')]
+    assert [row['length'] for row in best] == [256]
+    assert best[0]['stderr'] == pytest.approx(stats['energy']['error'])
+    lengths = [row['length'] for row in dump['rows']]
+    assert lengths == [2**n for n in range(len(lengths))], 'the table is one row per block length, doubling'
+
+
+def test_a_vmc_phase_carries_the_dump_only_when_reblocking_failed(out_file):
+    """The asymmetry is CASINO's: `vmc.f90` prints it inside the `derr > 0.1*err` branch.
+
+    So in a VMC phase the dump is a diagnostic that shows up exactly when the error bar is in
+    doubt, and its absence is the good case -- while a DMC phase always has one. Anything that
+    treats it as an always-present field is wrong, which is how the field list of the examples
+    re-run learnt to skip it.
+    """
+    converged = parse_out(out_file('vmc_single'))['phases'][0]
+    assert converged['reblock_converged'] is True
+    assert 'reblock' not in converged
+
+    failed = parse_out(out_file('vmc_dmc'))['phases'][0]
+    assert failed['reblock_converged'] is False
+    assert failed['reblock']['stderr']['value'] == failed['energy_errors']['reblock']['value']
+
+
+def test_a_running_dmc_run_is_read_from_dmc_status(out_file):
+    """`out` carries no DMC energy until the run ends. While it runs, dmc.status is the only source."""
+    parsed = parse_out(out_file('dmc_running'))
+    assert parsed['complete'] is False
+    assert [phase['kind'] for phase in parsed['phases']] == ['vmc', 'dmc_equil', 'dmc_stats']
+    stats = parsed['phases'][2]
+    assert stats['nblock'] == 9
+    assert stats['energy']['value'] is None, 'the mixed estimators are written when the run ends, not before'
+    assert 'dmc.status' in stats['energy']['reason']
+
+    current = parsed['dmc_status']
+    assert current['path'].endswith('dmc.status')
+    assert current['energy'] == {'value': -14.667081101447, 'error': 2.9894476e-05, 'line': 6}
+    assert current['data_points']['value'] == 90000
+    assert current['units']['value'] == '(au)'
+    assert current['reblock']['best_block_length'] == 256
+    assert current['reblock_converged'] is True
+
+
+def test_the_result_of_a_running_dmc_run_is_never_the_vmc_phase(out_file):
+    """The VMC phase of a vmc_dmc run is configuration generation: its energy is the trial wave function's."""
+    parsed = parse_out(out_file('dmc_running'))
+    vmc = parsed['phases'][0]
+    assert vmc['energy']['value'] is not None, 'the VMC phase does report an energy -- that is the trap'
+    result = parsed['result']
+    assert result['source'] == 'dmc.status'
+    assert result['energy'] is parsed['dmc_status']['energy']
+    assert result['energy']['value'] != vmc['energy']['value']
+
+
+def test_dmc_status_is_parsed_the_same_way_standalone(out_file):
+    """One parser for the file and for the section of `out` it is copied into when the run ends."""
+    directory = out_file('dmc_running').parent
+    assert parse_dmc_status(directory) == parse_dmc_status(directory / 'dmc.status')
+    assert parse_dmc_status(directory) == parse_out(directory)['dmc_status']
+
+
+def test_statistics_of_a_live_run_carry_the_population_analysis(out_file):
+    """popstats : T is what puts this section in the file; without it there is no such block."""
+    current = parse_dmc_status(out_file('dmc_running').parent)
+    assert current['variance']['value'] == pytest.approx(0.019266923223)
+    assert current['target_weight']['value'] == 1024.0
+    assert current['average_population']['value'] == pytest.approx(1023.954111111111)
+    assert current['time_step']['value'] == pytest.approx(0.02083)
+
+
+def test_dmc_status_note_says_the_file_is_transient(out_file):
+    """A number read from a file that will not exist tomorrow has to say so."""
+    note = parse_dmc_status(out_file('dmc_running').parent)['note']
+    assert 'deletes' in note and 'block' in note
 
 
 def test_interrupted_run_invents_no_energy(out_file):

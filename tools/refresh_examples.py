@@ -56,9 +56,15 @@ def payload(directory):
 def fields(parsed):
     """Every path in the parse that carries a number, so a lost field can be named.
 
-    Efficiency is left out. CASINO computes it from a measured time, so on a run short enough
-    for a block to take 0.00 s it cannot print one -- whether the line appears is a property of
-    the clock, not of the output format, and it flickers between two runs of the same binary.
+    Two things are left out, both because whether CASINO prints them is a property of the run
+    rather than of the output format, so they flicker between two runs of the same binary:
+
+    - `efficiency`, which is computed from a measured time and cannot be printed for a block
+      short enough to take 0.00 s;
+    - the VMC `reblock` dump, which `vmc.f90` prints only inside the `derr > 0.1*err` branch --
+      that is, only when the reblocking did not converge, which depends on the sample. (The DMC
+      one is unconditional, but the exclusion is by path and covers both; a DMC run that stopped
+      printing it would have to be caught by `test_parse_out.py` instead.)
     """
     found = set()
 
@@ -75,7 +81,7 @@ def fields(parsed):
                 walk(child, f'{path}[{i}]')
 
     walk(parsed, '')
-    return {path for path in found if not path.endswith('efficiency')}
+    return {path for path in found if not path.endswith('efficiency') and '.reblock.' not in path}
 
 
 def shape(parsed):
