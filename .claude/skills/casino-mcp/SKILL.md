@@ -5,15 +5,17 @@ description: >
   external control layer that lets Claude Code start, watch, stop and read out real CASINO
   calculations instead of shelling out to runqmc by hand. Covers the architecture (launcher
   process + JSON job registry under XDG state, never inside the calculation directory), the
-  tool surface (casino_run / casino_status / casino_stop / casino_list_jobs, later
-  casino_results), the guardrails that stop a run from overwriting committed reference data
-  in examples/, why stopping and continuing a run go through haltqmc and runqmc rather than
-  through signals and file moves of our own, why the pid that matters is the launcher's
-  session and not runqmc's, and the staged plan with what was accepted and what was rejected
-  from the original
-  proposal. Trigger on: MCP, casino-mcp, mcp server, job manager, job id, casino_run,
-  .mcp.json, FastMCP/MCPServer. See casino-run for how CASINO itself is driven and what its
-  output files contain.
+  tool surface (casino_run / casino_status / casino_stop / casino_list_jobs / casino_results /
+  casino_prepare), why a running DMC job is read from the transient dmc.status and never from
+  the VMC phase of its own out, how an input is written for a runtype and why the recipe tables
+  come from runqmc's own checks, the guardrails that stop a run from overwriting committed
+  reference data in examples/, why stopping and continuing a run go through haltqmc and runqmc
+  rather than through signals and file moves of our own, why the pid that matters is the
+  launcher's session and not runqmc's, and the staged plan with what was accepted and what was
+  rejected from the original proposal. Trigger on: MCP, casino-mcp, mcp server, job manager,
+  job id, casino_run, casino_results, casino_prepare, dmc.status, input_file, .mcp.json,
+  FastMCP/MCPServer. See casino-run for how CASINO itself is driven and what its output files
+  contain.
 ---
 
 # casino-mcp
@@ -25,17 +27,19 @@ Since 0.1.0 it is a standalone pip-installable package with its own repository, 
 directory inside PyCasino. Layout:
 
 ```
-pyproject.toml             casino-mcp 0.2.0, entry point `casino-mcp`. The only TOML here
+pyproject.toml             casino-mcp 0.4.0, entry point `casino-mcp`. The only TOML here
 src/casino_mcp/
     settings.py    where CASINO is, where our state goes: the environment, and constants
-    parse_out.py   CASINO `out` -> structured phases (no MCP, no dependencies)
+    parse_out.py   CASINO `out` + `dmc.status` -> structured phases (no MCP, no dependencies)
+    input_file.py  CASINO `input`: read, edit, and write one per runtype (same, text in/out)
     jobs.py        job registry, state dir, process liveness
-    runtime.py     start / status / stop over runqmc and haltqmc. No MCP in this module
+    runtime.py     prepare / start / status / stop / results. No MCP in this module
     server.py      MCPServer + tool definitions. A thin wrapper over runtime
     launcher.py    the child process that actually waits on runqmc
-    cli.py         `casino-mcp serve | config | run | status | stop | jobs | parse`
+    cli.py         `casino-mcp serve | config | run | status | stop | jobs | results |
+                    prepare | parse`
 examples/          18 real calculations, a settings cover. The only tree the tests read
-tests/             158 unit tests, no CASINO needed; tests/integration is opt-in
+tests/             222 unit tests, no CASINO needed; tests/integration is opt-in
 tools/protocol_dump.py     the JSON-RPC by hand, no SDK. Read before adding a tool
 .mcp.json          registration for Claude Code (project scope)
 ```
@@ -166,16 +170,39 @@ Without the second, a recycled PID reports a finished job as running.
 
 ## Tool surface
 
-Stage 1 (implemented):
-
 | tool | returns |
 | --- | --- |
 | `casino_run(workdir, nproc, restart, resume, unlock)` | job_id, pid, workdir, command, started, removed |
 | `casino_status(job_id)` | running/finished/failed, pid, runtime, exit code |
 | `casino_stop(job_id)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs()` | every known job, newest first |
+| `casino_results(job_id)` | the parsed `out`, plus `dmc.status` when the run has not ended |
+| `casino_prepare(source, dest, runtype, overrides)` | a new directory with the `input` the next run needs |
 
-Deliberately *not* implemented yet: anything that reads physics out of `out`.
+**A running DMC job is read from `dmc.status` or not at all.** CASINO writes the mixed
+estimators into `out` once, at the very end of the run (`write_dmc_status(final=.true.)` in
+`dmc.f90`); before that the same text is in `dmc.status`, rewritten whole after every
+statistics block and *deleted* at the end — the deletion is not a loss, it is the moment the
+text moves into `out`. Three consequences the parser encodes and a future change must keep:
+
+- `parse_out` looks for `dmc.status` next to the `out` it was given, and points `result` at it
+  when it is there. Without that, `result` on a running `vmc_dmc` job is the energy of the
+  configuration-generation VMC phase — a real number, printed by CASINO, and *not this
+  calculation's answer*. That is the trap the whole feature exists to close.
+- A killed run keeps its `dmc.status`: only an orderly end deletes it. So the last estimate a
+  stopped calculation reached survives `casino_stop`, and is the only energy it will ever have.
+- The statistical-efficiency section needs `popstats : T`, which is not CASINO's default. Every
+  DMC recipe in `input_file` sets it for that reason.
+
+`casino_prepare` is the writing half, and `input_file` under it. Two rules there:
+
+- **`apply` edits, it never regenerates.** A calculation's `input` holds hand comments, blocks
+  and expert keywords no recipe knows; rewriting from a template drops exactly what cannot be
+  reconstructed. Only the named lines are touched.
+- **The tables come from `runqmc`, not from the manual.** `PHASES` is its `case $runtype`,
+  `MANDATORY` its `mandatory/` attributes. Writing them from what the keyword documentation
+  implies got three things wrong at once, and `tests/integration/test_recipes_check_only.py`
+  — every recipe put to `runqmc --check-only` — is what caught them. Change a table, run it.
 
 **A dirty directory has two exits, not one.** `runqmc` appends to `out` and to the `.hist`
 files, so a permission to start in a directory that already holds them is not enough — the
@@ -250,16 +277,23 @@ Then, in order:
    over the same code.~~ *(done: `server.py` delegates, `cli.py` is the second wrapper.)*
 4. ~~Split out as a shippable `casino-mcp` package.~~ *(done, 0.1.0: own repository,
    `pyproject.toml`, 141 unit tests that need no CASINO, CI on 3.11–3.13.)*
-5. **`casino_results(job_id)`** — the tool that returns physics to the model. Everything it
-   needs exists (`parse_out`, and `casino-mcp parse` as its CLI twin); what is left is
-   deciding what a *job* returns as opposed to a *file*, and it is the next thing to build.
-6. `casino_prepare(source, dest, overrides)` — copy a directory and rewrite keywords. That is
-   what "изменить параметр → новый каталог" needs, and it can lean on
-   `casino/readers/validate.py` in PyCasino, which knows all 304 keywords and their types.
+5. ~~**`casino_results(job_id)`** — the tool that returns physics to the model.~~ *(done, 0.4.0.)*
+   What a *job* returns as opposed to a *file*: the parsed `out` plus the job's own state, so
+   the caller can tell a final number from a running one — and the `dmc.status` beside it,
+   which is the only place a running DMC calculation has an energy at all.
+6. ~~`casino_prepare(source, dest, overrides)` — copy a directory and rewrite keywords.~~
+   *(done, 0.4.0: `input_file.py` and `runtime.prepare`.)* It does **not** lean on PyCasino's
+   `casino/readers/validate.py` as this section once planned — installing casino-mcp does not
+   install PyCasino, so the rules are restated here, from `runqmc`'s own checks rather than
+   from that file, and pinned by an integration test against `runqmc --check-only`.
 
 Extracting the package before step 1 would have meant designing HTTP, SLURM and Tasks for
-users who did not exist yet, instead of having a working parser. Steps 5 and 6 are the same
+users who did not exist yet, instead of having a working parser. Steps 5 and 6 were the same
 bet in reverse: build the tool only once the library under it is boring.
+
+What is left of the horizon: `casino_compare_jobs` only if the transcript actually gets clumsy
+(point 7 above), and the τ→0 and population-bias workflows, which are reasoning over ~20
+numbers and belong in the transcript rather than in Python.
 
 ### Why this order (product-architecture verdict, 2026-08)
 
@@ -329,16 +363,18 @@ It is the first thing to run when a tool call refuses.
 ## Testing
 
 ```
-pytest                     # 141 tests, ~2 s, no CASINO
+pytest                     # 222 tests, ~6 s, no CASINO
 pytest -m integration      # needs runqmc/envmc, but nothing outside this repository
 ```
 
 The unit suite runs anywhere, including CI. What stands in for CASINO is a fake `runqmc`
 shell script (`fake_runqmc` in `tests/conftest.py`), which is enough to exercise the parts
 that are ours: the launcher, the process group, the exit code, the log file, the guardrails.
-The parser is checked field by field against five real `out` files under `tests/data/` — one
+The parser is checked field by field against six real `out` files under `tests/data/` — one
 per shape: single VMC, varmin, emin, a DMC run split over 2 equilibration and 20 statistics
-blocks, and a run that was killed — and, in `tests/test_examples.py`, against all 18
+blocks, a run that was killed, and `dmc_running/`, a snapshot of a DMC calculation taken while
+it was still going (a truncated `out` and the `dmc.status` that stood beside it) — and, in
+`tests/test_examples.py`, against all 18
 calculations in `examples/`. Each fixture keeps the `input` that produced it, so its asserted
 numbers can be reproduced rather than trusted; all but the interrupted one were regenerated on
 CASINO v3.1.24. `examples/` is where breadth lives, `tests/data/` is where precision does —
@@ -378,6 +414,10 @@ The integration suite needs a real installation and is deselected by default:
 - `tests/integration/test_examples_envmc.py` — `parse_out` against CASINO's own `envmc`, one
   test per calculation under `examples/`. 17 pass, 1 skips (the Kr run that stopped before
   printing an energy, where envmc rebuilds one CASINO never wrote). ~1 s.
+- `tests/integration/test_recipes_check_only.py` — every `input_file` recipe put to
+  `runqmc --check-only`, one test per runtype. ~12 s. This is the only oracle for the writing
+  half, and it is not decoration: the first run of it found three wrong entries in tables that
+  had been reasoned out of the keyword documentation instead of read off `runqmc`.
 - `tests/integration/test_client_smoke.py` — real stdio MCP against the installed
   `casino-mcp serve`: the tool schemas, the guardrail, a short VMC to completion, a long one
   stopped, and a job that outlives the server that started it.

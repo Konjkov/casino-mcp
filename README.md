@@ -8,12 +8,13 @@
 [![casino-mcp MCP server](https://glama.ai/mcp/servers/Konjkov/casino-mcp/badges/card.svg)](https://glama.ai/mcp/servers/Konjkov/casino-mcp)
 
 An MCP control plane over the Fortran [CASINO](https://vallico.net/casinoqmc/) quantum Monte
-Carlo code: start runs, know what is running, stop them, and read an `out` file as structured
-data instead of shipping 4000 lines of text into a model's context.
+Carlo code: write the `input` for the next calculation, start it, know what is running, stop
+it, and read the result as structured data instead of shipping 4000 lines of text into a
+model's context — including from a DMC run that is still going, which has no energy in `out`
+at all until its last block.
 
-> **Beta (0.2.0).** The four control tools and the `out` parser are done and tested against a
-> real CASINO; the tool that returns physics to the model is not shipped yet. Interfaces may
-> still move before 1.0.
+> **Beta (0.4.0).** Everything below is tested against a real CASINO, and the recipes are
+> tested against `runqmc`'s own input check. Interfaces may still move before 1.0.
 
 ## What it is, and what it is not
 
@@ -77,9 +78,29 @@ not ours.
 | `casino_status(job_id)` | running / finished / failed / stopped / unknown, pid, runtime, exit code |
 | `casino_stop(job_id, timeout)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs(limit)` | every known job, newest first |
+| `casino_results(job_id)` | the physics: phases, energies, error bars, variance, per-block numbers — each with the file and line it was read from |
+| `casino_prepare(source, dest, runtype, overrides)` | a new calculation directory with the `input` the next run needs |
 
 The runtype (`vmc`, `vmc_opt`, `vmc_dmc`, …) comes from the `input` file in `workdir`; there
 is no tool per runtype, because that multiplies the surface without adding a capability.
+What `casino_prepare` adds is the other half of that: it *writes* the `input`, filling in the
+keywords a runtype requires and the source directory does not set, and refusing to write one
+that CASINO would reject.
+
+### Reading a DMC run before it ends
+
+A DMC calculation runs for hours and has **no energy in `out`** until the last block: CASINO
+writes the mixed estimators once, at the end. Until then the current estimate lives in
+`dmc.status`, which it rewrites after every statistics block and *deletes* when the run
+finishes — copying the same text into `out` at that moment, so nothing is lost, but nothing is
+available either while it matters most.
+
+`casino_results` reads that file when it is there, and points `result` at it. So a running job
+answers with the estimate as of its last block, and never with the VMC energy of the
+configuration-generation phase — which is the trial wave function's, not the calculation's. A
+run stopped by `casino_stop` keeps its `dmc.status`, so the last estimate it reached survives
+the stop; a run still equilibrating has none, and `result` says so rather than reaching for an
+earlier phase.
 
 Starting, stopping and continuing a calculation all go through CASINO's own scripts, and only
 through them: `runqmc` starts, `haltqmc` ends and tidies, `runqmc --continue` or a plain
@@ -139,6 +160,8 @@ casino-mcp run ./calc --continue   # ... or carrying that run on instead
 casino-mcp status 20260823-164511-qobn
 casino-mcp stop   20260823-164511-qobn   # stop the run, then hand the directory to haltqmc
 casino-mcp jobs                    # the registry, newest first
+casino-mcp results 20260823-164511-qobn   # the physics of that job, live runs included
+casino-mcp prepare ./vmc ./dmc --runtype vmc_dmc -s dtdmc=0.005   # the next calculation
 casino-mcp parse ./calc            # the `out` file as JSON
 casino-mcp serve                   # the MCP server on stdio
 ```
@@ -218,10 +241,38 @@ does not print; it is taken from the one block exactly as `envmc` does, and labe
 `derived`. Nothing shells out to `envmc` or `endmc` at runtime — `endmc` misparses numbers
 under a non-C locale.
 
+`parse_dmc_status` reads the `dmc.status` of a run that has not finished, through the same
+parser: `write_dmc_status` in CASINO's `dmc.f90` writes that file and the `out` section from
+one place, so reading them with two would be one more thing to keep in step. `parse_out` picks
+it up on its own when the file is next to the `out` it was given.
+
+## The `input` writer
+
+`input_file` is the same shape in the other direction: text in, text out, no MCP.
+
+```python
+from casino_mcp import input_file
+
+current = input_file.read('./vmc')
+filled, missing = input_file.recipe('vmc_dmc', {'dtdmc': '0.02083'}, present=current['keywords'])
+text = input_file.apply(current['text'], filled)      # edits; it does not regenerate
+input_file.check(*input_file.parse_text(text))        # [] when CASINO would take it
+```
+
+`apply` only touches the lines it is named for, so hand comments, `%block`s and expert
+keywords no recipe has heard of all survive a rewrite — a calculation's `input` is a document,
+and the parts nobody can reconstruct are exactly the parts a template would drop. `build`
+writes a whole file from a recipe for callers that have no source to start from.
+
+The recipes and the rules come from `runqmc`'s own checks rather than from reading the manual,
+and `tests/integration/test_recipes_check_only.py` puts every one of them back to
+`runqmc --check-only`: a recipe is right when CASINO says the input is runnable, not when our
+own `check` does.
+
 ## Tests
 
 ```bash
-pytest                      # 158 tests, ~5 s, no CASINO needed
+pytest                      # 227 tests, ~6 s, no CASINO needed
 ```
 
 The unit suite runs anywhere: the parser is checked field by field against five real `out`
@@ -234,9 +285,9 @@ pytest -m integration
 ```
 
 The integration suite needs a real CASINO, but nothing outside this repository. It checks
-`parse_out` against CASINO's own `envmc` over every `out` in `examples/`, re-runs the whole
-tree against the installed binary, and drives the server over real stdio MCP, running and
-stopping actual VMC calculations.
+`parse_out` against CASINO's own `envmc` over every `out` in `examples/`, puts every input
+recipe to `runqmc --check-only`, re-runs the whole tree against the installed binary, and
+drives the server over real stdio MCP, running and stopping actual VMC calculations.
 
 `examples/` holds eighteen calculations chosen as a cover of the settings CASINO can be run
 with — every runtype, basis type, optimiser and wavefunction option appears at least once, and

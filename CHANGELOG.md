@@ -4,6 +4,73 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
+## [0.4.0] — 2026-08-27
+
+The server can now read a calculation and write one. Both halves are about the same thing:
+a DMC run takes hours, and until this release the only two moments it could be spoken about
+were before it started and after it ended.
+
+### Added
+
+- **`casino_results(job_id)`** (`casino-mcp results`): the physics of one job as data —
+  phases, energies, error bars, variance, per-block numbers, every value carrying the file
+  and the line it was read from. `result` points at the number that is the run's answer.
+- **A running DMC calculation can be read, and this is the only way to read one.** CASINO
+  writes the mixed estimators into `out` once, at the very end; until then the current
+  estimate lives in `dmc.status`, which it rewrites after every statistics block and
+  *deletes* when the run finishes — copying the same text into `out` at that moment, so
+  nothing is lost, but nothing is available either while it matters most. `parse_out` now
+  reads that file when it is there (`parse_dmc_status`, one parser shared with the `out`
+  section, because `write_dmc_status` in `dmc.f90` writes both), and points `result` at it.
+  A run stopped by `casino_stop` keeps its `dmc.status`, so the last estimate it reached
+  survives the stop.
+- While a DMC run is still equilibrating there is no DMC energy anywhere yet, and `result`
+  now says so instead of answering with the VMC phase — whose energy is the trial wave
+  function's, not the calculation's.
+- The reblock dump is parsed: the summary rows and the block-length table, with the row
+  CASINO marked `*** BEST ***` — which is where the quoted error bar comes from, and whether
+  the rows above it have flattened out is the whole question of whether it means anything.
+- **`casino_prepare(source, dest, runtype, overrides)`** (`casino-mcp prepare`): copy a
+  calculation into a new directory and write the `input` the next run needs. `runtype` fills
+  in what that runtype requires and the source does not set — switching `vmc` to `vmc_dmc` is
+  one keyword in the file and several more that CASINO then demands — while everything the
+  source already says survives. Only what a calculation is *given* is copied: `input`, the
+  orbital file, `correlation.data`, `parameters.casl`, the pseudopotentials and `config.in`;
+  never `out`, the `.hist` files or `config.out`.
+- `input_file`, the module under it: ESDF reading, an `apply` that edits rather than
+  regenerates (hand comments, `%block`s and expert keywords all survive a rewrite), recipes
+  for nine runtypes, and `check` for the combinations CASINO only rejects at run time — an
+  optimisation sample smaller than the DMC population or larger than the number of steps that
+  would write it, `opt_backflow` without `backflow`, the floor `opt_dtvmc` puts under
+  `vmc_equil_nstep`, a missing mandatory keyword. Nothing is written unless the result would
+  run; a refusal names the problems and creates no directory. What is legal but probably
+  unintended comes back as `warnings`.
+- The reblock dump is *not* an always-present field: `vmc.f90` prints it only inside the
+  `derr > 0.1*err` branch, so a VMC phase has one exactly when its reblocking failed, while a
+  DMC phase always does. `tools/refresh_examples.py` skips it in the field comparison for the
+  same reason it skips `efficiency` — whether CASINO prints it is a property of the run, not of
+  the output format.
+- `tests/integration/test_recipes_check_only.py`: every recipe put to `runqmc --check-only`,
+  which is the only oracle worth having for this — a recipe is right when CASINO says so, not
+  when our own `check` does. It earned its place immediately: both `dmc_*_nstep` keywords are
+  mandatory for *any* DMC runtype, including an equilibration-only one, and `dtdmc` and the
+  `*_nblock`s are not mandatory at all. The tables now come from `runqmc`'s own.
+
+### Changed
+
+- The tool surface is six, where it was four. `casino_run`, `casino_status`, `casino_stop`,
+  `casino_list_jobs`, and now `casino_results` and `casino_prepare`.
+- A DMC recipe sets `popstats : T`. It is not CASINO's default, and it is what puts the
+  statistical-efficiency section into `dmc.status` — the difference between a running
+  calculation that can be read and one that cannot, for no cost.
+
+### Fixed
+
+- `casino_run(restart=true)` now deletes `dmc.status` along with the rest of what an earlier
+  run left. Only an orderly end deletes it, so a killed DMC run leaves one behind, and a stale
+  one next to a fresh `out` would have been read as the current estimate of a calculation that
+  no longer exists.
+
 ## [0.3.0] — 2026-08-27
 
 A packaging release. The server can now be run from an image rather than an installation,
