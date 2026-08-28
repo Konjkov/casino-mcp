@@ -138,6 +138,38 @@ def test_continue_is_spelled_the_way_runqmc_spells_it(monkeypatch, capsys, workd
     assert seen['resume'] is True and seen['restart'] is False
 
 
+def test_prepare_forwards_its_flags(monkeypatch, capsys, tmp_path):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(source=source, dest=dest, **kwargs) or {})
+    code, _ = run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--runtype', 'vmc_dmc', '-s', 'dtdmc=0.005', '-s', 'opt_plan=')
+
+    assert code == 0
+    assert seen['runtype'] == 'vmc_dmc'
+    assert seen['overrides'] == {'dtdmc': '0.005', 'opt_plan': None}
+    assert seen['jastrow'] is None, 'a Jastrow is written only when it is asked for'
+
+
+def test_prepare_takes_the_jastrow_terms_as_a_list(monkeypatch, capsys, tmp_path):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(**kwargs) or {})
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--jastrow', 'u,chi', '-j', 'n_u=4', '-j', 'cutoff_u=6.5')
+
+    assert seen['jastrow'] == ['u', 'chi']
+    assert seen['jastrow_settings'] == {'n_u': 4, 'cutoff_u': 6.5}, 'an order is an integer and a cutoff is not'
+
+
+def test_a_bare_jastrow_flag_means_all_the_terms(monkeypatch, capsys, tmp_path):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(**kwargs) or {})
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--jastrow')
+    assert seen['jastrow'] == ['u', 'chi', 'f']
+
+
+def test_a_jastrow_setting_that_is_not_a_number_is_refused(capsys, tmp_path):
+    with pytest.raises(SystemExit, match='expects a number'):
+        run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--jastrow', '-j', 'n_u=eight')
+
+
 def test_stop_forwards_its_timeout(monkeypatch, capsys):
     seen = {}
     monkeypatch.setattr(cli.runtime, 'stop', lambda job_id, **kwargs: seen.update(job_id=job_id, **kwargs) or {})

@@ -8,12 +8,15 @@ description: >
   tool surface (casino_run / casino_status / casino_stop / casino_list_jobs / casino_results /
   casino_prepare), why a running DMC job is read from the transient dmc.status and never from
   the VMC phase of its own out, how an input is written for a runtype and why the recipe tables
-  come from runqmc's own checks, the guardrails that stop a run from overwriting committed
+  come from runqmc's own checks, how a blank Jastrow factor is written for a calculation that
+  has no correlation.data and why CASINO's own testrun is the only oracle for it, the guardrails
+  that stop a run from overwriting committed
   reference data in examples/, why stopping and continuing a run go through haltqmc and runqmc
   rather than through signals and file moves of our own, why the pid that matters is the
   launcher's session and not runqmc's, and the staged plan with what was accepted and what was
   rejected from the original proposal. Trigger on: MCP, casino-mcp, mcp server, job manager,
-  job id, casino_run, casino_results, casino_prepare, dmc.status, input_file, .mcp.json,
+  job id, casino_run, casino_results, casino_prepare, dmc.status, input_file, correlation.data,
+  correlation_data, blank Jastrow, u/chi/f term, .mcp.json,
   FastMCP/MCPServer. See casino-run for how CASINO itself is driven and what its output files
   contain.
 ---
@@ -32,6 +35,7 @@ src/casino_mcp/
     settings.py    where CASINO is, where our state goes: the environment, and constants
     parse_out.py   CASINO `out` + `dmc.status` -> structured phases (no MCP, no dependencies)
     input_file.py  CASINO `input`: read, edit, and write one per runtype (same, text in/out)
+    correlation_data.py  a blank Jastrow (u/chi/f) for a calculation that has none
     jobs.py        job registry, state dir, process liveness
     runtime.py     prepare / start / status / stop / results. No MCP in this module
     server.py      MCPServer + tool definitions. A thin wrapper over runtime
@@ -39,7 +43,7 @@ src/casino_mcp/
     cli.py         `casino-mcp serve | config | run | status | stop | jobs | results |
                     prepare | parse`
 examples/          18 real calculations, a settings cover. The only tree the tests read
-tests/             222 unit tests, no CASINO needed; tests/integration is opt-in
+tests/             262 unit tests, no CASINO needed; tests/integration is opt-in
 tools/protocol_dump.py     the JSON-RPC by hand, no SDK. Read before adding a tool
 .mcp.json          registration for Claude Code (project scope)
 ```
@@ -177,7 +181,7 @@ Without the second, a recycled PID reports a finished job as running.
 | `casino_stop(job_id)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs()` | every known job, newest first |
 | `casino_results(job_id)` | the parsed `out`, plus `dmc.status` when the run has not ended |
-| `casino_prepare(source, dest, runtype, overrides)` | a new directory with the `input` the next run needs |
+| `casino_prepare(source, dest, runtype, overrides, jastrow, jastrow_settings)` | a new directory with the `input` — and, asked for, the blank `correlation.data` — the next run needs |
 
 **A running DMC job is read from `dmc.status` or not at all.** CASINO writes the mixed
 estimators into `out` once, at the very end of the run (`write_dmc_status(final=.true.)` in
@@ -203,6 +207,27 @@ text moves into `out`. Three consequences the parser encodes and a future change
   `MANDATORY` its `mandatory/` attributes. Writing them from what the keyword documentation
   implies got three things wrong at once, and `tests/integration/test_recipes_check_only.py`
   — every recipe put to `runqmc --check-only` — is what caught them. Change a table, run it.
+
+**A blank Jastrow is written by us because nobody else writes one.** `use_jastrow : T` needs a
+`correlation.data`, an orbital code leaves none, and CASINO ships no utility for it — the
+manual says to copy an example and delete its numbers by hand. `correlation_data` writes it,
+under `casino_prepare(jastrow=[...])`. What holds it together:
+
+- **The atoms come from the orbital file, not from `input`.** `input` knows the electron count
+  and never the nuclei. `read_geometry` reads only the header of `gwfn.data` / `stowfn.data`;
+  `pwfn.data` and `bwfn.data` lay theirs out differently and are refused by name.
+- **Cutoffs are written as zero**, which `read_u_term` reads as *use the default* and answers
+  with `default_L_u()` — 2 or 5 a.u., against 4 for chi and 3 for f, and the Wigner-Seitz radius
+  when periodic. Writing a number would reimplement a rule that depends on the cell.
+- **Pseudo-atoms come out of the `*_pp.data` headers**, each of which states its atomic number,
+  so no table of element symbols is needed and `cusp_chi=1` is refused exactly where
+  `read_chi_term` errstops: a pseudo-atom, or a Slater-type basis.
+- **The oracle is `testrun : T`, not `--check-only`.** That script never opens
+  `correlation.data`; a test run makes CASINO read it, impose the constraints on the gamma
+  array and stop. `tests/integration/test_blank_jastrow.py`.
+- Finite systems only, and no BACKFLOW block: a periodic Jastrow wants a P term whose stars
+  come from `make_p_stars`, and a `backflow : T` input asking for a Jastrow-only file is
+  refused rather than half-written.
 
 **A dirty directory has two exits, not one.** `runqmc` appends to `out` and to the `.hist`
 files, so a permission to start in a directory that already holds them is not enough — the
@@ -286,6 +311,11 @@ Then, in order:
    `casino/readers/validate.py` as this section once planned — installing casino-mcp does not
    install PyCasino, so the rules are restated here, from `runqmc`'s own checks rather than
    from that file, and pinned by an integration test against `runqmc --check-only`.
+7. ~~The blank `correlation.data`, so the *first* calculation of a chain can be prepared too.~~
+   *(done: `correlation_data.py`, `casino_prepare(jastrow=[...])`.)* Jastrow u/chi/f for finite
+   systems. A BACKFLOW block and the periodic P term are the two pieces deliberately left out —
+   the first is the same shape again (eta/mu/phi over the same sets), the second needs
+   `make_p_stars`.
 
 Extracting the package before step 1 would have meant designing HTTP, SLURM and Tasks for
 users who did not exist yet, instead of having a working parser. Steps 5 and 6 were the same
@@ -418,6 +448,10 @@ The integration suite needs a real installation and is deselected by default:
   `runqmc --check-only`, one test per runtype. ~12 s. This is the only oracle for the writing
   half, and it is not decoration: the first run of it found three wrong entries in tables that
   had been reasoned out of the keyword documentation instead of read off `runqmc`.
+- `tests/integration/test_blank_jastrow.py` — every blank Jastrow put to a real CASINO with
+  `testrun : T`, three systems (all-electron gaussian, pseudo gaussian, Slater-type) against
+  three term combinations, plus the cutoff defaults CASINO chooses and the cusp it refuses.
+  ~25 s. `runqmc --check-only` cannot stand in: it never opens `correlation.data`.
 - `tests/integration/test_client_smoke.py` — real stdio MCP against the installed
   `casino-mcp serve`: the tool schemas, the guardrail, a short VMC to completion, a long one
   stopped, and a job that outlives the server that started it.

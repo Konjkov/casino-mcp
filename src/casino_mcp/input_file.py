@@ -543,15 +543,24 @@ def unused(keywords: dict) -> list[str]:
     return notes
 
 
-def check_files(directory, keywords: dict) -> list[str]:
-    """The files this input tells CASINO to read, and whether the directory has them."""
+def check_files(directory, keywords: dict, writing: tuple[str, ...] = ()) -> list[str]:
+    """The files this input tells CASINO to read, and whether the directory has them.
+
+    `writing` names the files the caller is about to write, and so counts as present: a blank
+    `correlation.data` for a calculation that has none is prepared alongside the input it goes
+    with, and refusing the input because the file is not there yet would refuse the pair.
+    """
     directory = Path(directory)
     errors = []
     basis = keywords.get('atom_basis_type', '').strip().lower()
     orbitals = ORBITAL_FILE.get(basis)
     if orbitals is not None and not (directory / orbitals).is_file():
         errors.append(f'atom_basis_type {basis} reads {orbitals}, and there is none in {directory}')
-    if (truthy(keywords.get('use_jastrow')) or truthy(keywords.get('backflow'))) and not (directory / 'correlation.data').is_file():
+    if (
+        'correlation.data' not in writing
+        and (truthy(keywords.get('use_jastrow')) or truthy(keywords.get('backflow')))
+        and not (directory / 'correlation.data').is_file()
+    ):
         errors.append(f'use_jastrow / backflow read correlation.data, and there is none in {directory}')
     if (truthy(keywords.get('use_gjastrow')) or keywords.get('psi_s', '').strip() == 'geminal') and not (directory / 'parameters.casl').is_file():
         errors.append(f'psi_s : geminal / use_gjastrow read parameters.casl, and there is none in {directory}')

@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
+## [Unreleased]
+
+### Added
+
+- **A blank Jastrow factor**, for the calculation at the start of a chain: one that has an
+  orbital file and nothing else, where `use_jastrow : T` needs a `correlation.data` that does
+  not exist yet. No CASINO utility writes one — nothing in `utils/` does, and the manual's own
+  instruction is to copy an example and delete its parameter lines by hand — so
+  `casino_prepare(source, dest, jastrow=['u', 'chi', 'f'])` writes it.
+- `correlation_data`, the module under it: the geometry out of the orbital file's own header
+  (`input` says how many electrons there are and never how many nuclei), one chi and f set per
+  element with every atom labelled, and no parameter value anywhere — CASINO fills `alpha`,
+  `beta` and `gamma` with zeros before it reads a line, and says "Not all coefficients supplied"
+  when there are none. Which atoms are pseudo-atoms is read out of the `*_pp.data` files, each
+  of which states its own atomic number, so the chi cusp is refused exactly where
+  `read_chi_term` would errstop on it — on a pseudo-atom, and on a Slater-type basis.
+- Cutoffs are written as zero, which CASINO reads as *use the default* and answers with
+  `default_L_u`, `default_L_chi`, `default_L_f`. Writing a number instead would be
+  reimplementing a choice that depends on the geometry; `warnings` says which values CASINO will
+  take, and `jastrow_settings` sets one where the default is not wanted.
+- `casino-mcp prepare --jastrow u,chi,f -j n_u=4`, the same thing for a shell.
+- `tests/integration/test_blank_jastrow.py`: every generated Jastrow put to a real CASINO with
+  `testrun : T`, which reads the input files, imposes the cusp and no-duplication constraints on
+  the gamma array, checks that they hold, and stops — in a fraction of a second.
+  `runqmc --check-only` is no oracle for this one: it never opens `correlation.data`.
+
+### Changed
+
+- `input_file.check_files` takes `writing`, the files the caller is about to write. A blank
+  `correlation.data` is prepared alongside the `input` it goes with, and refusing the input
+  because the file is not there yet would refuse the pair.
+
 ## [0.4.0] — 2026-08-27
 
 The server can now read a calculation and write one. Both halves are about the same thing:

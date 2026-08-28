@@ -93,6 +93,9 @@ async def test_the_advertised_tools_are_the_six(example):
     assert prepare.input_schema['required'] == ['source', 'dest']
     overrides = prepare.input_schema['properties']['overrides']
     assert {'type': 'null'} in overrides['anyOf'][0]['additionalProperties']['anyOf']
+    # and the blank Jastrow is a list of term names, not a flag: a client that sends one has to
+    # be able to say which terms it wants
+    assert prepare.input_schema['properties']['jastrow']['anyOf'][0] == {'type': 'array', 'items': {'type': 'string'}}
 
 
 async def test_committed_reference_data_is_refused_over_the_protocol(example):

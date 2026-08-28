@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from casino_mcp import input_file, jobs, parse_out, settings
+from casino_mcp import correlation_data, input_file, jobs, parse_out, settings
 
 LOCK_NAME = '.runqmc.lock'
 UPDATE_HELPER = 'haltqmc_update_input'  # the program `haltqmc -u` rewrites `input` with
@@ -277,7 +277,63 @@ def carry_configurations(source: Path, dest: Path, keywords: dict) -> str:
     return 'config.out -> config.in'
 
 
-def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str | None] | None = None) -> dict[str, Any]:
+def blank_jastrow(source: Path, dest: Path, keywords: dict, terms, overrides: dict | None = None) -> tuple[str, dict, list[str], list[str]]:
+    """The `correlation.data` a calculation with no Jastrow factor needs: text, what it says,
+    what is wrong with asking for it, and what it does not say out loud.
+
+    The geometry has to come from the orbital file -- `input` knows how many electrons there are
+    and never how many nuclei -- so which file that is comes from `atom_basis_type`, the same
+    table `check_files` refuses a run over.
+    """
+    basis = keywords.get('atom_basis_type', '').strip().lower()
+    orbitals = input_file.ORBITAL_FILE.get(basis)
+    if orbitals is None:
+        return '', {}, [f'atom_basis_type {basis or "(unset)"} has no orbital file to read the atoms out of, and a chi or f term needs them'], []
+    if basis in correlation_data.UNREADABLE_GEOMETRY:
+        return (
+            '',
+            {},
+            [
+                f'atom_basis_type {basis} keeps its geometry in {correlation_data.UNREADABLE_GEOMETRY[basis]}, '
+                f'whose layout this does not read: it is written by a periodic code, and a periodic Jastrow wants a P term this does not write'
+            ],
+            [],
+        )
+    try:
+        settings_ = correlation_data.settings_for(overrides)
+        geometry = correlation_data.read_geometry(source / orbitals)
+    except KeyError as problem:
+        return '', {}, [problem.args[0]], []
+    except (OSError, ValueError, UnicodeDecodeError) as problem:
+        return '', {}, [str(problem)], []
+
+    pseudo = correlation_data.pseudo_species(source)
+    errors = correlation_data.check(geometry, terms, settings_, pseudo=pseudo, basis=basis)
+    if not input_file.truthy(keywords.get('use_jastrow')):
+        errors.append('the input this would write does not set use_jastrow : T, so CASINO would not read the Jastrow factor at all')
+    if input_file.truthy(keywords.get('backflow')):
+        errors.append('backflow is T, and this writes a JASTROW block only: CASINO wants a BACKFLOW block in the same file')
+    if errors:
+        return '', {}, errors, []
+
+    text = correlation_data.blank(geometry, terms=terms, title=dest.name, settings=settings_)
+    description = {
+        'terms': list(terms),
+        'atoms': len(geometry['atomic_numbers']),
+        'sets': [{'atomic_number': group['z'], 'atoms': group['labels']} for group in geometry['sets']],
+        'pseudo': sorted(pseudo & set(geometry['atomic_numbers'])),
+    }
+    return text, description, [], correlation_data.describe(geometry, terms, settings_, pseudo=pseudo, basis=basis)
+
+
+def prepare(
+    source: str,
+    dest: str,
+    runtype: str = '',
+    overrides: dict[str, str | None] | None = None,
+    jastrow: list[str] | None = None,
+    jastrow_settings: dict | None = None,
+) -> dict[str, Any]:
     """Copy a calculation into a new directory and write the `input` the next run needs.
 
     This is the "change a parameter, get a new directory" step, and it is a copy rather than an
@@ -290,6 +346,12 @@ def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str 
     CASINO then demands. What the source already says is kept, so the electron count, the basis
     and any hand tuning survive; `overrides` wins over both. A value of null deletes a keyword,
     and a value with newlines in it is written as a `%block`.
+
+    `jastrow` names the terms of a blank Jastrow factor to write -- `['u', 'chi', 'f']` for the
+    usual one -- for the case the source has no `correlation.data` at all, which is every
+    calculation that has just come out of an orbital code. Every coefficient starts at zero,
+    because starting them anywhere else is what the optimisation is for. `jastrow_settings`
+    holds the shape of it: expansion orders, spin dependence, cutoffs, the truncation order.
 
     Nothing is written unless the result would run: the keywords are checked for the
     combinations CASINO only rejects at run time, and the directory for the files the input
@@ -305,6 +367,12 @@ def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str 
     forbidden = settings.forbidden(dest_path)
     if forbidden:
         return {'error': f'{dest_path} is under {forbidden}, which $CASINO_MCP_FORBID lists. No override exists; prepare the run elsewhere.'}
+    if jastrow and (source_path / 'correlation.data').is_file():
+        return {
+            'error': f'{source_path} already has a correlation.data, and it is an input: it would be copied over. '
+            f'A blank Jastrow would throw away whatever it holds.',
+            'fix': 'prepare from a directory that has no correlation.data, or leave jastrow unset to keep the one there is',
+        }
 
     current = input_file.read(source_path / 'input')
     values = {name.lower(): value for name, value in (overrides or {}).items()}
@@ -324,7 +392,15 @@ def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str 
     text = input_file.apply(current['text'], values) if values else current['text']
     keywords, blocks = input_file.parse_text(text)
 
-    errors = input_file.check(keywords, blocks) + input_file.check_files(source_path, keywords)
+    jastrow_text, described, jastrow_errors, jastrow_notes = '', {}, [], []
+    if jastrow:
+        jastrow_text, described, jastrow_errors, jastrow_notes = blank_jastrow(source_path, dest_path, keywords, jastrow, jastrow_settings)
+
+    errors = (
+        input_file.check(keywords, blocks)
+        + input_file.check_files(source_path, keywords, writing=('correlation.data',) if jastrow else ())
+        + jastrow_errors
+    )
     if errors:
         return {'error': 'the input this would write does not describe a run CASINO can do', 'problems': errors, 'wrote': None}
 
@@ -334,6 +410,9 @@ def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str 
     if carried:
         copied.append(carried)
     (dest_path / 'input').write_text(text)
+    if jastrow_text:
+        (dest_path / 'correlation.data').write_text(jastrow_text)
+        copied.append('correlation.data (written blank)')
     changed = {name: value for name, value in values.items() if current['keywords'].get(name, object()) != value}
     return {
         'workdir': str(dest_path),
@@ -341,7 +420,8 @@ def prepare(source: str, dest: str, runtype: str = '', overrides: dict[str, str 
         'runtype': keywords.get('runtype', '').strip(),
         'copied': copied,
         'changed': changed,
-        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords),
+        'jastrow': described or None,
+        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords) + jastrow_notes,
     }
 
 

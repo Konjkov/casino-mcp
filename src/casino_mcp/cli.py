@@ -10,6 +10,7 @@ whose state can only be inspected through the model that started it is not debug
     casino-mcp stop <job_id>
     casino-mcp results <job_id>        the physics of one job, live runs included
     casino-mcp prepare <src> <dst> --runtype vmc_dmc -s dtdmc=0.005
+    casino-mcp prepare <src> <dst> --runtype vmc_opt --jastrow u,chi,f
     casino-mcp parse <dir-or-out>      an `out` file as JSON
 """
 
@@ -17,7 +18,7 @@ import argparse
 import json
 import sys
 
-from casino_mcp import __version__, input_file, parse_out, runtime, settings
+from casino_mcp import __version__, correlation_data, input_file, parse_out, runtime, settings
 
 
 def emit(data) -> int:
@@ -64,19 +65,47 @@ def cmd_status(args) -> int:
     return emit(runtime.status(args.job_id))
 
 
-def keyword_pairs(settings_list) -> dict:
+def keyword_pairs(settings_list, flag: str = '--set') -> dict:
     """`-s name=value` pairs off the command line; an empty value deletes the keyword."""
     pairs = {}
     for item in settings_list or ():
         name, separator, value = item.partition('=')
         if not separator:
-            raise SystemExit(f'--set expects name=value, got {item!r}')
+            raise SystemExit(f'{flag} expects name=value, got {item!r}')
         pairs[name.strip()] = value if value != '' else None
     return pairs
 
 
+def jastrow_terms(value: str | None) -> list[str] | None:
+    """`--jastrow u,chi,f`, and a bare `--jastrow` for the three of them."""
+    if value is None:
+        return None
+    terms = [term.strip().lower() for term in value.split(',') if term.strip()]
+    return terms or list(correlation_data.TERMS)
+
+
+def jastrow_numbers(settings_list) -> dict:
+    """`-j name=value` pairs; every Jastrow setting is a number, unlike the input keywords."""
+    pairs = {}
+    for name, value in keyword_pairs(settings_list, '--jastrow-set').items():
+        number = input_file.number(value)
+        if number is None:
+            raise SystemExit(f'--jastrow-set expects a number, got {name}={value!r}')
+        pairs[name] = number if name.startswith('cutoff') else int(number)
+    return pairs
+
+
 def cmd_prepare(args) -> int:
-    return emit(runtime.prepare(args.source, args.dest, runtype=args.runtype, overrides=keyword_pairs(args.set)))
+    return emit(
+        runtime.prepare(
+            args.source,
+            args.dest,
+            runtype=args.runtype,
+            overrides=keyword_pairs(args.set),
+            jastrow=jastrow_terms(args.jastrow),
+            jastrow_settings=jastrow_numbers(args.jastrow_set),
+        )
+    )
 
 
 def cmd_results(args) -> int:
@@ -147,6 +176,20 @@ def build_parser() -> argparse.ArgumentParser:
         action='append',
         metavar='NAME=VALUE',
         help='set one keyword; repeatable. An empty value (NAME=) deletes it.',
+    )
+    prepare.add_argument(
+        '--jastrow',
+        nargs='?',
+        const='',
+        metavar='TERMS',
+        help=f'write a blank Jastrow factor: the terms, comma-separated ({",".join(correlation_data.TERMS)}), or bare for all of them',
+    )
+    prepare.add_argument(
+        '-j',
+        '--jastrow-set',
+        action='append',
+        metavar='NAME=VALUE',
+        help=f'one Jastrow setting; repeatable ({", ".join(sorted(correlation_data.DEFAULTS))})',
     )
     prepare.set_defaults(func=cmd_prepare)
 

@@ -68,6 +68,8 @@ def casino_prepare(
     dest: str,
     runtype: str = '',
     overrides: dict[str, str | None] | None = None,
+    jastrow: list[str] | None = None,
+    jastrow_settings: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Copy a calculation into a new directory and write the `input` for the next run in it.
 
@@ -92,6 +94,20 @@ def casino_prepare(
         defaults. A null value deletes the keyword; a value containing newlines is written as a
         `%block` (that is how `opt_plan` and `npcell` are set). Values are written verbatim, so
         booleans are 'T' and 'F' as CASINO spells them.
+    jastrow: the terms of a blank Jastrow factor to write into the new directory -- ['u', 'chi',
+        'f'] for the usual one, ['u'] for a system with no atoms. This is for the first
+        calculation of a chain, the one whose directory holds an orbital file and nothing else:
+        `use_jastrow : T` needs a `correlation.data`, no CASINO utility writes one, and the
+        manual's own instruction is to copy an example and delete its numbers by hand. Every
+        coefficient starts at zero, which is what the first optimisation cycle is for. Leave it
+        unset when the source already has a `correlation.data`; asking for both is refused,
+        because a blank Jastrow would discard an optimised one. Finite systems only so far: a
+        periodic Jastrow wants a P term, whose stars come from CASINO's own `make_p_stars`.
+    jastrow_settings: the shape of that Jastrow, where the defaults are not wanted --
+        trunc_order (3), n_u (8), n_chi (8), n_f_en (3), n_f_ee (3), spin_dep_u (1),
+        spin_dep_chi (0), spin_dep_f (1), cusp_chi (0), cutoff_u / cutoff_chi / cutoff_f (0,
+        which CASINO reads as "use your own default"), no_dup_u (0), no_dup_chi (0),
+        optimizable (1, the cutoffs).
 
     Nothing is written unless the result would actually run: the keyword combinations CASINO
     only rejects at run time are checked first (an optimisation sample smaller than the DMC
@@ -101,7 +117,7 @@ def casino_prepare(
     placeholder default, `dmc_stats_nstep` not divisible by its block count, keywords left over
     from the runtype this was copied from -- comes back in `warnings` and does not stop it.
     """
-    return runtime.prepare(source, dest, runtype=runtype, overrides=overrides)
+    return runtime.prepare(source, dest, runtype=runtype, overrides=overrides, jastrow=jastrow, jastrow_settings=jastrow_settings)
 
 
 @server.tool()

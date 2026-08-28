@@ -553,6 +553,84 @@ def test_prepare_says_which_keywords_it_changed(calculation, tmp_path):
     assert prepared['changed'] == {'dtdmc': '0.005'}, 'a value that was already what was asked for did not change'
 
 
+# --- the blank Jastrow that goes with it ----------------------------------------------
+
+# As much of a gwfn.data as the geometry needs: a molecule of two elements, one of them twice.
+ORBITALS = """TITLE
+ water
+
+GEOMETRY
+--------
+Number of atoms:
+         3
+Atomic numbers for each atom:
+         8         1         1
+Valence charges for each atom:
+ 6.0000000000000E+00 1.0000000000000E+00 1.0000000000000E+00
+
+BASIS SET
+"""
+
+
+@pytest.fixture
+def orbitals_only(tmp_path):
+    """A directory as an orbital code leaves it: a wave function, an input, and no Jastrow."""
+    path = tmp_path / 'hf'
+    path.mkdir()
+    (path / 'gwfn.data').write_text(ORBITALS)
+    (path / 'input').write_text(input_file.build('vmc', {'neu': '5', 'ned': '5', 'atom_basis_type': 'gaussian'}))
+    return path
+
+
+def test_prepare_writes_the_jastrow_a_calculation_with_none_needs(orbitals_only, tmp_path):
+    """The first calculation of a chain: `use_jastrow : T` and nothing for it to read."""
+    prepared = runtime.prepare(
+        str(orbitals_only), str(tmp_path / 'opt'), runtype='vmc_opt', overrides={'vmc_nconfig_write': '10000'}, jastrow=['u', 'chi', 'f']
+    )
+    assert 'error' not in prepared, prepared
+    written = (tmp_path / 'opt' / 'correlation.data').read_text()
+    assert ' START JASTROW' in written and ' END JASTROW' in written
+    assert 'correlation.data (written blank)' in prepared['copied']
+    assert prepared['jastrow']['sets'] == [{'atomic_number': 8, 'atoms': [1]}, {'atomic_number': 1, 'atoms': [2, 3]}]
+
+
+def test_the_input_is_not_refused_for_the_jastrow_that_is_about_to_be_written(orbitals_only, tmp_path):
+    """`use_jastrow : T` with no correlation.data is a refusal -- unless it comes with one."""
+    assert 'error' in runtime.prepare(str(orbitals_only), str(tmp_path / 'a'), runtype='vmc')
+    assert 'error' not in runtime.prepare(str(orbitals_only), str(tmp_path / 'b'), runtype='vmc', jastrow=['u'])
+
+
+def test_prepare_will_not_blank_a_jastrow_that_already_exists(orbitals_only, tmp_path):
+    (orbitals_only / 'correlation.data').write_text('an optimized Jastrow factor\n')
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'opt'), runtype='vmc_opt', jastrow=['u'])
+    assert 'already has a correlation.data' in prepared['error']
+    assert not (tmp_path / 'opt').exists()
+
+
+def test_a_jastrow_the_input_would_not_read_is_refused(orbitals_only, tmp_path):
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'opt'), overrides={'use_jastrow': 'F'}, jastrow=['u'])
+    assert any('use_jastrow' in problem for problem in prepared['problems'])
+    assert not (tmp_path / 'opt').exists()
+
+
+def test_a_jastrow_that_backflow_would_leave_half_written_is_refused(orbitals_only, tmp_path):
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'bf'), overrides={'backflow': 'T'}, jastrow=['u', 'chi', 'f'])
+    assert any('BACKFLOW block' in problem for problem in prepared['problems'])
+
+
+def test_a_basis_whose_geometry_is_not_readable_says_so(orbitals_only, tmp_path):
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'pw'), overrides={'atom_basis_type': 'plane-wave'}, jastrow=['u'])
+    assert any('pwfn.data' in problem for problem in prepared['problems'])
+
+
+def test_the_jastrow_settings_reach_the_file(orbitals_only, tmp_path):
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'opt'), jastrow=['u'], jastrow_settings={'n_u': 4, 'cutoff_u': 6.5})
+    assert 'error' not in prepared, prepared
+    written = (tmp_path / 'opt' / 'correlation.data').read_text()
+    assert ' Expansion order N_u\n   4\n' in written
+    assert '   6.5' in written
+
+
 def test_a_prepared_directory_is_one_casino_run_will_accept(calculation, tmp_path, fake_runqmc, python_path):
     """The two halves meet here: what prepare writes is what start is willing to run."""
     fake_runqmc()
