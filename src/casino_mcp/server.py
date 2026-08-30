@@ -75,6 +75,21 @@ class Phase(BaseModel):
     dtvmc: Measured | None = Field(None, description='the VMC time step, au: the variance of the gaussian proposal, not its width')
 
 
+class BinaryStamp(BaseModel):
+    """The `casino` binary as it was at launch, frozen into the job record.
+
+    Not which binary, but which build of it: this is what tells results from before and after a
+    rebuild apart afterwards. `size` and `mtime` are absent when the binary was not there to stat.
+    """
+
+    model_config = ConfigDict(extra='allow')
+
+    path: str | None = Field(None, description='the binary runqmc was given, under bin_qmc/<arch>/<version>')
+    exists: bool | None = Field(None, description='whether it was there when the job was launched')
+    size: int | None = Field(None, description='its size in bytes')
+    mtime: str | None = Field(None, description='local time it was last built')
+
+
 class JobState(BaseModel):
     """One job as the control plane sees it, which is what runqmc and /proc say and nothing about the physics."""
 
@@ -92,7 +107,7 @@ class JobState(BaseModel):
     command: list[str] | None = Field(None, description='the runqmc command line as it was launched')
     nproc: int | None = Field(None, description='MPI processes the job was given')
     pid: int | None = Field(None, description='pid of the launcher, not of the casino processes under it')
-    binary: str | None = Field(None, description='the CASINO binary runqmc chose')
+    binary: BinaryStamp | None = Field(None, description='the build of the CASINO binary this job ran: path, size and mtime as they were at launch')
     started: str | None = Field(None, description='local time the job was launched')
     finished: str | None = Field(None, description='local time the launcher exited')
     stopped: str | None = Field(None, description='local time casino_stop signalled it')

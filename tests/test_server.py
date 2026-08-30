@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from casino_mcp import runtime, server, settings
+from casino_mcp import jobs, runtime, server, settings
 from casino_mcp.parse_out import parse_out
 
 TOOLS = {
@@ -101,6 +101,24 @@ def test_run_passes_every_argument_through(monkeypatch):
     monkeypatch.setattr(runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {})
     server.casino_run('/tmp/calc', nproc=4, version='debug', restart=True, unlock=True)
     assert seen == {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True}
+
+
+def test_the_binary_stamp_survives_the_output_model(tmp_path, monkeypatch):
+    """A declared field is a claim about what the runtime returns, and `binary` was the one that lied.
+
+    jobs.binary_stamp has answered with a dict since 0.1.0 while JobState declared a str, so
+    casino_status, casino_wait and casino_list_jobs all failed at serialization -- after the
+    calculation had run. Nothing caught it: extra='allow' waves through every key the model does
+    not name, casino_run declares a plain dict and casino_results never fills the field in, and
+    the delegation tests above stub the runtime out, so no unit test ever put a real stamp in a model.
+    """
+    present, missing = tmp_path / 'casino', tmp_path / 'gone' / 'casino'
+    present.write_bytes(b'x')
+    for path in (present, missing):
+        monkeypatch.setattr(settings, 'binary_path', lambda _version, path=path: path)
+        stamp = jobs.binary_stamp('opt')
+        state = server.JobState.model_validate({'job_id': 'j', 'status': 'running', 'binary': stamp})
+        assert state.model_dump(exclude_none=True)['binary'] == stamp
 
 
 def test_every_declared_field_says_what_it_is():

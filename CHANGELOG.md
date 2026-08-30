@@ -67,6 +67,19 @@ All notable changes to this project are documented here. The format follows
 - The trap that is real is the other way round, and `advise` now warns about it: `dtvmc` set
   while `opt_dtvmc` is not 0 means CASINO takes the value as a starting point and optimizes the
   step away from it, so a scan over `dtvmc` measures one step in every directory.
+- `casino_status`, `casino_wait` and `casino_list_jobs` answer again. All three return the
+  `JobState` family, and `JobState.binary` declared a `str` while `binary_stamp()` has answered
+  with a dict — `path`, `exists`, `size`, `mtime` — since the initial commit, so every one of
+  them failed at serialization with `binary: Input should be a valid string`, after the
+  calculation had already run. The stamp now has a model of its own, `BinaryStamp`, which is
+  also the honest name for it: not which binary, but which build of it, the thing that tells
+  results from before and after a rebuild apart. Nothing had caught this in five releases
+  because the field was the one place the model named what the runtime returns and named it
+  wrongly — `extra='allow'` waves every unnamed key through untouched — while `casino_run`
+  declares a plain dict and hands the same stamp back correctly, and `casino_results` never
+  fills the field in. Guarded now by a unit test that puts a real `binary_stamp()`, in both the
+  shapes it has, through `JobState`; the tests that stub the runtime out call the tool as a
+  plain function and never reach the output model at all.
 
 ## [0.5.0] — 2026-08-30
 
