@@ -425,6 +425,105 @@ def parse_messages(lines):
     return [{'line': i + 1, 'text': line.strip()} for i, line in enumerate(lines) if line.strip().startswith(markers)]
 
 
+PHASE_KINDS = ('vmc', 'opt', 'dmc_equil', 'dmc_stats')
+SEGMENT = re.compile(r'^([A-Za-z_][A-Za-z_0-9]*)?(?:\[(-?\d+)\])?$')
+
+
+class NoSuchField(Exception):
+    """A path that does not exist in this run. Not the same as a number CASINO did not print."""
+
+
+def what_is_here(node) -> str:
+    if isinstance(node, dict):
+        return 'has ' + ', '.join(sorted(node)) if node else 'is empty'
+    if isinstance(node, list):
+        return f'is a list of {len(node)}'
+    return f'is {node!r}, which has nothing under it'
+
+
+def pick_phase(parsed: dict, kind: str, index):
+    """A phase by kind: the last one of that kind, or the cycle CASINO numbered `index`."""
+    phases = [phase for phase in parsed.get('phases', []) if phase.get('kind') == kind]
+    if not phases:
+        kinds = sorted({phase.get('kind') for phase in parsed.get('phases', [])})
+        raise NoSuchField(f'this run has no {kind} phase; its phases are {", ".join(kinds) or "none"}')
+    if index is None:
+        return phases[-1]
+    numbered = [phase for phase in phases if phase.get('index') == index]
+    if not numbered:
+        available = ', '.join(str(phase.get('index')) for phase in phases)
+        raise NoSuchField(f'this run has no {kind} phase numbered {index}; the {kind} phases are numbered {available}')
+    return numbered[0]
+
+
+def step(node, name, index, seen: str):
+    here = seen
+    if name is not None:
+        if not isinstance(node, dict) or name not in node:
+            raise NoSuchField(f'no {name} under {seen or "the top level"}, which {what_is_here(node)}')
+        node = node[name]
+        here = f'{seen}.{name}' if seen else name
+    if index is not None:
+        if not isinstance(node, list):
+            raise NoSuchField(f'{here} is not a list, so {here}[{index}] means nothing')
+        try:
+            node = node[index]
+        except IndexError:
+            raise NoSuchField(f'{here} has {len(node)} entries, so there is no {here}[{index}]') from None
+    return node
+
+
+def walk(parsed: dict, path: str):
+    """One path into a parsed run. See `select` for what a path may say."""
+    node, seen = parsed, ''
+    for position, segment in enumerate(path.split('.')):
+        match = SEGMENT.match(segment)
+        if not match or (match.group(1) is None and match.group(2) is None):
+            raise NoSuchField(f'{segment!r} in {path!r} is not a name, a name[i], or a [i]')
+        name, index = match.group(1), None if match.group(2) is None else int(match.group(2))
+        if position == 0 and name in PHASE_KINDS:
+            node = pick_phase(parsed, name, index)
+        else:
+            node = step(node, name, index, seen)
+        seen = segment if not seen else f'{seen}.{segment}'
+    return node
+
+
+def select(parsed: dict, fields) -> tuple[dict, dict, list]:
+    """The few numbers a caller came for, as a flat {path: value}.
+
+    A whole parsed run is 10-16 kB of JSON, and a scan over 38 directories that wants six
+    numbers from each does not want 600 kB of them. A path is written in the parsed run's own
+    keys, so there is nothing to learn beyond four rules:
+
+        vmc, opt, dmc_equil, dmc_stats   the last phase of that kind
+        opt[3], vmc[2]                   the cycle CASINO itself numbered 3, 2
+        phases[-1], phases[0]            by position, when the kind does not matter
+        keywords.DTVMC, cpu_time.value   anything else is a key of the parsed run
+
+    and one distinction. A path that does not exist is a mistake in the question and comes back
+    in `problems`, naming what is there instead; a path that exists but holds a number CASINO
+    did not print comes back as null with its reason, which is a fact about the run.
+
+    A path that lands on a measured value collapses to the number, since that is what was being
+    asked for -- `vmc.energy.error` and `vmc.energy.line` reach the rest of it.
+    """
+    values, reasons, problems = {}, {}, []
+    for path in fields:
+        try:
+            node = walk(parsed, path)
+        except NoSuchField as e:
+            problems.append(f'{path}: {e}')
+            continue
+        if isinstance(node, dict) and 'value' in node:
+            values[path] = node['value']
+            if node['value'] is None and node.get('reason'):
+                reasons[path] = node['reason']
+        else:
+            values[path] = node
+    return values, reasons, problems
+
+
 def parse_out(path) -> dict:
     path = Path(path)
     if path.is_dir():

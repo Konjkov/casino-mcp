@@ -113,7 +113,9 @@ class JobStore:
 
     def add(self, meta: dict) -> None:
         index = self.index()
-        index[meta['job_id']] = {'workdir': meta['workdir'], 'created': meta['created']}
+        # `created_epoch` and not the id: a job id is only chronological to the second, and two
+        # runs of the same directory a second apart are exactly what a scan does.
+        index[meta['job_id']] = {'workdir': meta['workdir'], 'created': meta['created'], 'created_epoch': meta['created_epoch']}
         keep = settings.KEEP_JOBS
         if keep > 0 and len(index) > keep:
             # job ids sort chronologically, so the oldest records fall off the end
@@ -122,6 +124,26 @@ class JobStore:
 
     def meta(self, job_id: str):
         return read_json(jobs_dir() / job_id / 'meta.json')
+
+    def latest(self, workdir) -> str | None:
+        """The newest job that ran in this directory, or None.
+
+        The registry answers the question "what ran here", so that nothing has to be written
+        into the calculation directory to record it: one directory is one calculation, and what
+        is in it is what CASINO put there. Paths are compared resolved, so a symlinked or
+        relative path finds the job that a different spelling of it started.
+        """
+        try:
+            wanted = Path(workdir).expanduser().resolve()
+        except OSError:
+            return None
+        index = self.index()
+        here = [job_id for job_id, entry in index.items() if entry.get('workdir') and Path(entry['workdir']).resolve() == wanted]
+        if not here:
+            return None
+        # a record written before `created_epoch` was kept falls back to its id, which orders
+        # to the second and is all such a record has
+        return max(here, key=lambda job_id: (index[job_id].get('created_epoch') or 0, job_id))
 
     def mark_stopped(self, job_id: str) -> None:
         """Record that this job was stopped on purpose.

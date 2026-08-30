@@ -14,11 +14,20 @@ import pytest
 from casino_mcp import runtime, server, settings
 from casino_mcp.parse_out import parse_out
 
-TOOLS = {'casino_run', 'casino_status', 'casino_stop', 'casino_list_jobs', 'casino_results', 'casino_prepare'}
+TOOLS = {
+    'casino_run',
+    'casino_status',
+    'casino_wait',
+    'casino_stop',
+    'casino_list_jobs',
+    'casino_results',
+    'casino_input',
+    'casino_prepare',
+}
 
 
-def test_the_tool_surface_is_exactly_these_six():
-    """The control plane, the tool that reads physics out of the files, and the one that writes an input."""
+def test_the_tool_surface_is_exactly_these_eight():
+    """The control plane, the two that read a calculation -- what it did and what it was given -- and the one that writes an input."""
     assert {name for name in dir(server) if name.startswith('casino_')} == TOOLS
 
 
@@ -62,9 +71,11 @@ def test_tools_are_registered_with_the_server():
     [
         ('casino_run', 'start', {'workdir': '/tmp/x'}),
         ('casino_status', 'status', {'job_id': 'j'}),
+        ('casino_wait', 'wait', {'job_id': 'j'}),
         ('casino_stop', 'stop', {'job_id': 'j'}),
         ('casino_list_jobs', 'listing', {}),
-        ('casino_results', 'results', {'job_id': 'j'}),
+        ('casino_results', 'results', {'job_id': 'j', 'fields': ['vmc.energy']}),
+        ('casino_input', 'calculation_input', {'job_id': 'j'}),
         ('casino_prepare', 'prepare', {'source': '/tmp/a', 'dest': '/tmp/b'}),
     ],
 )
@@ -126,3 +137,13 @@ async def test_the_schemas_reach_the_wire():
     # the two tools that write answer with what they did, which is not a fixed shape
     assert 'properties' not in tools['casino_run'].output_schema
     assert 'properties' not in tools['casino_prepare'].output_schema
+
+
+def test_the_results_docstring_names_what_the_parser_returns():
+    """The description is the only documentation the model gets, and it was silent about the
+    numbers a scan reads: `acceptance`, `efficiency`, `correlation_time`, `dtvmc`, CPU time."""
+    doc = inspect.getdoc(server.casino_results)
+    for kind in ('vmc', 'opt', 'dmc_equil', 'dmc_stats'):
+        assert kind in doc, kind
+    for name in ('acceptance', 'correlation_time', 'efficiency', 'dtvmc', 'steps_per_process', 'nparam', 'mixed_estimators', 'cpu_time', 'keywords'):
+        assert name in doc, name

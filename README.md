@@ -78,10 +78,33 @@ not ours.
 | --- | --- |
 | `casino_run(workdir, nproc, version, restart, resume, unlock)` | job_id, pid, workdir, command, binary stamp, what `restart` removed |
 | `casino_status(job_id)` | running / finished / failed / stopped / unknown, pid, runtime, exit code |
+| `casino_wait(job_id, timeout)` | the same, once the calculation has ended — plus `waited` and `timed_out` |
 | `casino_stop(job_id, timeout)` | what was signalled, final status, what `haltqmc` did |
-| `casino_list_jobs(limit)` | every known job, newest first |
-| `casino_results(job_id)` | the physics: phases, energies, error bars, variance, per-block numbers — each with the file and line it was read from |
+| `casino_list_jobs(limit, workdir)` | every known job, newest first; `workdir` narrows it to one directory |
+| `casino_results(job_id, fields)` | the physics: phases, energies, error bars, variance, acceptance, correlation time, efficiency, per-block numbers — each with the file and line it was read from; `fields` answers with just the paths asked for |
+| `casino_input(job_id)` | the keywords and `%block`s a calculation was given — `random_seed` included, which CASINO never echoes into `out` |
 | `casino_prepare(source, dest, runtype, overrides, jastrow, backflow, jastrow_settings, geminal, geminal_settings)` | a new calculation directory with the `input` — and, for a first run, the `correlation.data` and `parameters.casl` — the next run needs |
+
+`casino_results` and `casino_input` answer different questions on purpose: what a run *did*
+against what it was *told to do*. The `keywords` in a result are CASINO's own echo, which is
+neither the file nor a superset of it — it holds every default CASINO applied, 70 entries
+against the 23 a file typically sets, and drops what it does not print, `random_seed` among
+them. `casino_input` also reads a directory nothing has run in, which is how a prepared
+calculation is checked before there is a job to name it by, and keeps the `input` a stopped job
+was started from, since `haltqmc -u` rewrites that file in place.
+
+`fields` is what a scan wants from `casino_results`: a whole parsed run is 10–16 kB of JSON,
+and 38 directories' worth of it is 600 kB to say six numbers a point. A path is written in the
+run's own keys — `vmc`, `opt`, `dmc_equil`, `dmc_stats` mean the last phase of that kind,
+`opt[3]` the cycle CASINO itself numbered, `phases[-1]` a position, and anything else is a key:
+`keywords.DTVMC`, `cpu_time`, `vmc.energy.error`. A path that does not exist comes back in
+`problems` naming what is there instead; a path that exists but holds a number CASINO never
+printed comes back as null with its reason. `keywords.DTVMC` against `vmc.dtvmc` is the pair
+worth asking for together — the step the input asked for against the step the run used.
+
+Every `job_id` above is either the id `casino_run` returned or the calculation directory,
+which is what a chain of runs actually holds: the registry knows which job ran where, so
+nothing has to be written into the calculation directory to record it.
 
 The runtype (`vmc`, `vmc_opt`, `vmc_dmc`, …) comes from the `input` file in `workdir`; there
 is no tool per runtype, because that multiplies the surface without adding a capability.
@@ -230,13 +253,17 @@ casino-mcp run ./calc -p 4         # start a calculation
 casino-mcp run ./calc --restart    # ... after deleting what an earlier run left there
 casino-mcp run ./calc --continue   # ... or carrying that run on instead
 casino-mcp status 20260823-164511-qobn
+casino-mcp status ./calc           # every job argument takes a directory: its newest job
+casino-mcp wait   ./calc           # block until that calculation ends
 casino-mcp stop   20260823-164511-qobn   # stop the run, then hand the directory to haltqmc
 casino-mcp jobs                    # the registry, newest first
+casino-mcp jobs -C ./calc          # ... or only what ran in one directory
 casino-mcp results 20260823-164511-qobn   # the physics of that job, live runs included
 casino-mcp prepare ./vmc ./dmc --runtype vmc_dmc -s dtdmc=0.005   # the next calculation
 casino-mcp prepare ./hf ./opt --runtype vmc_opt --jastrow u,chi,f # ... and the first one
 casino-mcp prepare ./hf ./bf --jastrow --backflow -s backflow=T   # ... with backflow in it
 casino-mcp prepare ./hf ./gem --geminal p:2,d:1 -g anchors=1      # ... as a geminal wave function
+casino-mcp input ./calc            # the keywords it was given, random_seed included
 casino-mcp parse ./calc            # the `out` file as JSON
 casino-mcp serve                   # the MCP server on stdio
 ```

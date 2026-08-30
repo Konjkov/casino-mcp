@@ -385,8 +385,10 @@ def test_stopping_a_finished_job_says_so_instead_of_signalling(workdir, fake_run
 
 
 def test_unknown_job_ids_are_errors_not_exceptions():
-    assert runtime.status('nope') == {'error': 'unknown job nope'}
-    assert runtime.stop('nope') == {'error': 'unknown job nope'}
+    for answer in (runtime.status('nope'), runtime.stop('nope'), runtime.wait('nope'), runtime.results('nope')):
+        assert answer['error'].startswith('unknown job nope')
+    # a directory is a job name too, so one that never ran says that rather than 'unknown job'
+    assert 'no job has run in' in runtime.status('.')['error']
 
 
 def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
@@ -395,6 +397,110 @@ def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
 
     listed = runtime.listing(limit=2)['jobs']
     assert [job['job_id'] for job in listed] == sorted(ids, reverse=True)[:2]
+
+
+def test_a_directory_names_its_newest_job(workdir, fake_runqmc, python_path):
+    """What a campaign holds is the directory; the job id of the run in it is never seen."""
+    fake_runqmc()
+    ids = [runtime.start(str(workdir), restart=True)['job_id'] for _ in range(2)]
+
+    assert runtime.status(str(workdir))['job_id'] == ids[-1]
+    assert runtime.results(str(workdir))['job_id'] == ids[-1]
+    # a relative spelling of the same directory finds the same job
+    assert runtime.status(str(workdir.relative_to(Path.cwd())))['job_id'] == ids[-1]
+
+
+def test_listing_filters_by_directory(workdir, tmp_path, fake_runqmc, python_path):
+    fake_runqmc()
+    here = runtime.start(str(workdir), restart=True)['job_id']
+    other = tmp_path / 'other'
+    other.mkdir()
+    (other / 'input').write_text('runtype : vmc\n')
+    runtime.start(str(other), restart=True)
+
+    assert [job['job_id'] for job in runtime.listing(workdir=str(workdir))['jobs']] == [here]
+
+
+def test_waiting_for_a_job_that_has_already_ended_returns_at_once(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    job_id = runtime.start(str(workdir), restart=True)['job_id']
+    runtime.wait(job_id)
+
+    waited = runtime.wait(job_id)
+    assert waited['status'] == 'finished' and waited['timed_out'] is False and waited['waited'] < 1
+
+
+def test_waiting_stops_when_the_job_does(workdir, fake_runqmc, python_path):
+    fake_runqmc(sleep=1.0)
+    job_id = runtime.start(str(workdir), restart=True)['job_id']
+
+    waited = runtime.wait(str(workdir))  # by directory, and it is still running when we ask
+    assert waited['job_id'] == job_id
+    assert waited['status'] == 'finished' and waited['timed_out'] is False
+    assert 0.5 < waited['waited'] < 30
+
+
+def test_a_wait_that_runs_out_says_so_and_leaves_the_job_alone(workdir, fake_runqmc, python_path):
+    fake_runqmc(sleep=5.0)
+    job_id = runtime.start(str(workdir), restart=True)['job_id']
+
+    waited = runtime.wait(job_id, timeout=0.5)
+    assert waited['timed_out'] is True and waited['status'] == 'running'
+    assert 'call again' in waited['note']
+    assert runtime.status(job_id)['status'] == 'running'  # waiting is not stopping
+    runtime.stop(job_id)
+
+
+# --- the input a calculation was given -----------------------------------------------
+
+
+def test_the_input_of_a_directory_nothing_has_run_in(workdir):
+    """Half the point of taking a directory: checking a prepared calculation before it runs."""
+    (workdir / 'input').write_text('runtype : vmc\nrandom_seed : 12345\n%block opt_plan\n1 method=varmin\n2\n%endblock opt_plan\n')
+
+    answer = runtime.calculation_input(str(workdir))
+
+    assert answer['runtype'] == 'vmc'
+    assert answer['keywords']['random_seed'] == '12345'  # what CASINO never echoes into `out`
+    assert answer['blocks']['opt_plan'] == ['1 method=varmin', '2']
+    assert 'job_id' not in answer and 'error' not in answer
+
+
+def test_the_input_of_a_job_by_id_and_by_directory(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    job_id = runtime.start(str(workdir), restart=True)['job_id']
+
+    by_id = runtime.calculation_input(job_id)
+    assert by_id['job_id'] == job_id and by_id['keywords']['runtype'] == 'vmc'
+    assert runtime.calculation_input(str(workdir))['job_id'] == job_id
+
+
+def test_the_input_a_stopped_job_was_started_from_survives_the_rewrite(workdir, fake_runqmc, fake_haltqmc, python_path):
+    """haltqmc -u rewrites `input` in place, so without the kept copy the question has no answer."""
+    fake_runqmc(sleep=300)
+    fake_haltqmc()
+    job_id = runtime.start(str(workdir))['job_id']
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+    runtime.stop(job_id, timeout=10.0)
+    # what haltqmc -u does to the file, which the fake one does not
+    (workdir / 'input').write_text('runtype : vmc\nnewrun : F\n')
+
+    answer = runtime.calculation_input(job_id)
+
+    assert answer['keywords']['newrun'] == 'F'
+    assert 'newrun' not in answer['before_halt']['keywords']
+    assert answer['before_halt']['path'].startswith(str(jobs.jobs_dir()))
+    assert 'haltqmc' in answer['note']
+
+
+def test_the_input_of_something_that_is_neither_a_job_nor_a_directory():
+    assert runtime.calculation_input('nope')['error'].startswith('unknown job nope')
+
+
+def test_a_directory_with_no_input_says_which_directory(tmp_path):
+    (tmp_path / 'empty').mkdir()
+    answer = runtime.calculation_input(str(tmp_path / 'empty'))
+    assert 'no CASINO `input`' in answer['error'] and answer['workdir'].endswith('empty')
 
 
 # --- results -------------------------------------------------------------------------
@@ -420,7 +526,7 @@ def test_results_before_casino_has_written_anything(workdir, out_file):
     """A job whose runqmc has not produced an `out` yet reports that, and says where its own log is."""
     job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
     (workdir / 'out').unlink()
-    report = runtime.results(job_id, store)
+    report = runtime.results(job_id, store=store)
     assert 'no `out`' in report['error']
     assert report['job_id'] == job_id
     assert 'job directory' in report['note']
@@ -429,7 +535,7 @@ def test_results_before_casino_has_written_anything(workdir, out_file):
 def test_results_of_a_running_dmc_job_come_from_dmc_status(workdir, out_file):
     """The point of the tool: a DMC run that has not ended still has an answer, and it is not the VMC one."""
     job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
-    report = runtime.results(job_id, store)
+    report = runtime.results(job_id, store=store)
 
     assert report['job_id'] == job_id
     assert report['workdir'] == str(workdir)
@@ -444,7 +550,7 @@ def test_results_without_a_dmc_status_read_out_alone(workdir, out_file):
     """The same job once CASINO has deleted the file: the numbers are then in `out` itself."""
     job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
     (workdir / 'dmc.status').unlink()
-    report = runtime.results(job_id, store)
+    report = runtime.results(job_id, store=store)
 
     assert 'dmc_status' not in report
     assert report['result']['value'] is None
@@ -453,7 +559,7 @@ def test_results_without_a_dmc_status_read_out_alone(workdir, out_file):
 
 def test_results_carry_the_job_state_so_the_numbers_can_be_judged(workdir, out_file):
     job_id, store = dmc_job(workdir, out_file('dmc_running').parent)
-    report = runtime.results(job_id, store)
+    report = runtime.results(job_id, store=store)
     assert report['status'] == 'finished'
     assert report['nproc'] == 4
     assert report['exit_code'] == 0

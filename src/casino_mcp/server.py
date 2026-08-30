@@ -103,6 +103,32 @@ class JobState(BaseModel):
     error: str | None = Field(None, description='set instead of everything else when the call could not be answered')
 
 
+class Waited(JobState):
+    """What casino_wait answers with: the job's state, and what the waiting came to."""
+
+    waited: float | None = Field(None, description='seconds this call blocked for')
+    timed_out: bool | None = Field(None, description='true when the timeout ran out first and the job is still running')
+
+
+class Input(BaseModel):
+    """A calculation's `input` as data: what the run was told to do."""
+
+    model_config = ConfigDict(extra='allow')
+
+    workdir: str | None = Field(None, description='the calculation directory the file was read from')
+    path: str | None = Field(None, description='the `input` itself')
+    runtype: str | None = Field(None, description='RUNTYPE as this file sets it')
+    job_id: str | None = Field(None, description='the newest job that ran here, when one has; absent for a directory nothing has run in')
+    status: str | None = Field(None, description="that job's state")
+    keywords: dict[str, str] | None = Field(None, description='every keyword the file sets, verbatim: names as written, values unparsed')
+    blocks: dict[str, list[str]] | None = Field(None, description='every %block in the file, as its lines -- opt_plan, npcell, and the rest')
+    before_halt: dict[str, Any] | None = Field(
+        None, description='the same for the `input` this job was started from, when casino_stop has since let haltqmc rewrite it'
+    )
+    note: str | None = Field(None, description='something about this answer the caller would otherwise have to infer')
+    error: str | None = Field(None, description='set instead of everything else when the call could not be answered')
+
+
 class JobList(BaseModel):
     model_config = ConfigDict(extra='allow')
 
@@ -134,6 +160,9 @@ class Results(JobState):
         ),
     )
     messages: list[dict[str, Any]] | None = Field(None, description='the warnings and errors CASINO printed, each {line, text}')
+    fields: dict[str, Any] | None = Field(None, description='what `fields` asked for, as one flat {path: value}; the rest of the report is not sent')
+    reasons: dict[str, str] | None = Field(None, description='for a projected path that is null, why CASINO printed no number there')
+    problems: list[str] | None = Field(None, description='the paths in `fields` that do not exist in this run, each naming what is there instead')
 
 
 @server.tool()
@@ -279,13 +308,36 @@ def casino_prepare(
 
 @server.tool()
 def casino_status(job_id: str) -> JobState:
-    """State of one job: running / finished / failed / stopped, pid, runtime in seconds, exit code."""
+    """State of one job: running / finished / failed / stopped, pid, runtime in seconds, exit code.
+
+    job_id: the id casino_run returned, or the calculation directory -- then it is the newest
+        job that ran there. Every tool that takes a job takes either.
+    """
     return runtime.status(job_id)  # type: ignore[return-value]
 
 
 @server.tool()
-def casino_results(job_id: str) -> Results:
-    """Physics out of a job's files: energies, error bars, variance, per-block numbers.
+def casino_wait(job_id: str, timeout: float = settings.WAIT_TIMEOUT) -> Waited:
+    """Wait for a running calculation to end, and answer with the state it ended in.
+
+    This is how a chain is driven without a polling loop: run, wait, read the results, prepare
+    the next directory from this one. `waited` is how long it took and `timed_out` says the job
+    is still going -- the wait is bounded because this server answers one call at a time, so
+    waiting is the whole control plane standing still. A caller that wants longer calls again.
+
+    A job that has already ended returns at once. Waiting is not stopping: nothing is signalled
+    and the calculation is not touched.
+
+    job_id: the id casino_run returned, or the calculation directory.
+    timeout: seconds to block before answering that the job is still running.
+    """
+    return runtime.wait(job_id, timeout=timeout)  # type: ignore[return-value]
+
+
+@server.tool()
+def casino_results(job_id: str, fields: list[str] | None = None) -> Results:
+    """Everything a job's files say, as data: energies, error bars, variance, acceptance ratio,
+    correlation time, efficiency, the optimized DTVMC, CPU and real time, per-block numbers.
 
     Reads `out` and returns it as phases, because a CASINO run is a sequence of them and not
     one result: `vmc_opt` writes a VMC and an optimization phase per cycle, `vmc_dmc` writes
@@ -293,6 +345,26 @@ def casino_results(job_id: str) -> Results:
     is this run's answer, and every value carries the file and line it was read from. Nothing
     is computed here that CASINO did not print, and a value it did not print comes back as null
     with the reason.
+
+    What is in a phase depends on what kind it is, and the numbers a scan usually wants are
+    there without grepping the file for them -- the output schema carries their units:
+
+        vmc        acceptance (per cent), correlation_time (steps), efficiency (au^-2 s^-1),
+                   dtvmc (the optimized step, not the one asked for), steps_per_process,
+                   energy, variance, energy_errors, reblock, reblock_converged, nblock,
+                   blocks[] with the same quantities and the time each took
+        opt        method (varmin / emin), nparam, energy, variance, return_code, halted
+        dmc_equil  acceptance, energy, variance, nblock, blocks[]
+        dmc_stats  the same, plus mixed_estimators, target_weight, average_population,
+                   effective_population, time_step, correlation_length, correlation_time,
+                   std_dev_local_energy, steps, effective_steps, stat_inefficiency_est,
+                   stat_inefficiency_measured, data_points
+
+    Beside the phases: `keywords`, CASINO's own echo of the input -- which is not the `input`
+    file, since it holds the defaults CASINO applied and not the keywords it never prints --
+    `runtype`, `cpu_time` and `real_time` in seconds, `ended`, `complete`, `messages`, and
+    `dmc_status` while a DMC run is still going. The run itself is named by `path`, `version`,
+    `build`, `host`, `mpi_processes` and `started`.
 
     A DMC run that has not ended is readable too, and this is the only way to read one: CASINO
     writes the mixed estimators into `out` at the very end, and until then the current estimate
@@ -305,14 +377,51 @@ def casino_results(job_id: str) -> Results:
 
     While the run is still equilibrating there is no DMC energy anywhere yet, and `result` then
     says so rather than answering with an earlier phase.
+
+    job_id: the id casino_run returned, or the calculation directory.
+    fields: answer with just these paths, as one flat `fields` map, instead of the whole run --
+        a scan over 38 directories wanting six numbers from each does not want 16 kB of JSON
+        per point. A path is written in the keys above, with four rules: `vmc`, `opt`,
+        `dmc_equil`, `dmc_stats` mean the last phase of that kind; `opt[3]` and `vmc[2]` the
+        cycle CASINO itself numbered; `phases[-1]` and `phases[0]` by position; anything else
+        is a key of the run -- `keywords.DTVMC`, `cpu_time`, `result.energy`, `vmc.energy.error`,
+        `vmc.blocks[0].time`, and `status` or `workdir` from the job's own state. A path that
+        lands on a measured value collapses to the number. A path that does not exist is a
+        mistake in the question and comes back in `problems` naming what is there instead; a
+        path that exists but holds a number CASINO never printed comes back as null, with why
+        in `reasons`. (`keywords.DTVMC` against `vmc.dtvmc` is the pair worth asking for
+        together: the step the input asked for against the step the run actually used.)
     """
-    return runtime.results(job_id)  # type: ignore[return-value]
+    return runtime.results(job_id, fields=fields)  # type: ignore[return-value]
 
 
 @server.tool()
-def casino_list_jobs(limit: int = 20) -> JobList:
-    """Every known job, newest first, with its current state."""
-    return runtime.listing(limit)  # type: ignore[return-value]
+def casino_input(job_id: str) -> Input:
+    """The `input` of a calculation: the keywords and blocks it was given, as data.
+
+    What a run was *told* to do, which `casino_results` does not answer and is not meant to.
+    The `keywords` in a result are CASINO's own echo of the input, and that echo is neither the
+    file nor a superset of it: it holds every default CASINO applied -- 70 entries against the
+    23 a file typically sets -- and silently drops what it does not print. `random_seed` is one
+    of those, and it is the keyword the question "can this number be reproduced" turns on.
+
+    A directory that has never been run is read too: that is how a prepared calculation is
+    checked before there is a job to name it by.
+
+    job_id: the id casino_run returned, or a calculation directory -- one that has run, or one
+        casino_prepare has only just written.
+    """
+    return runtime.calculation_input(job_id)  # type: ignore[return-value]
+
+
+@server.tool()
+def casino_list_jobs(limit: int = 20, workdir: str = '') -> JobList:
+    """Every known job, newest first, with its current state.
+
+    workdir: only the jobs that ran in this directory, newest first. What a chain of runs did
+        in one place, and the way to see that a directory has been run twice.
+    """
+    return runtime.listing(limit, workdir=workdir)  # type: ignore[return-value]
 
 
 @server.tool()
@@ -326,6 +435,7 @@ def casino_stop(job_id: str, timeout: float = settings.STOP_TIMEOUT) -> dict[str
     config.in, the lock file, and `input` rewritten for the work that is left -- so
     casino_run(workdir, resume=true) carries this calculation on.
 
+    job_id: the id casino_run returned, or the calculation directory.
     timeout: seconds the job gets to end on its own before the process group is killed.
     """
     return runtime.stop(job_id, timeout=timeout)

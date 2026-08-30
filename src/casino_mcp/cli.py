@@ -6,12 +6,15 @@ whose state can only be inspected through the model that started it is not debug
     casino-mcp config                  which CASINO the server will use, and from which variable
     casino-mcp jobs                    the registry, newest first
     casino-mcp run <dir> -p 4          start a calculation
-    casino-mcp status <job_id>
-    casino-mcp stop <job_id>
-    casino-mcp results <job_id>        the physics of one job, live runs included
+    casino-mcp status <job_id|dir>     every job argument takes a directory too
+    casino-mcp wait <job_id|dir>       block until the calculation ends
+    casino-mcp stop <job_id|dir>
+    casino-mcp results <job_id|dir>    the physics of one job, live runs included
+    casino-mcp results <dir> -f vmc.efficiency   ... or just the numbers asked for
     casino-mcp prepare <src> <dst> --runtype vmc_dmc -s dtdmc=0.005
     casino-mcp prepare <src> <dst> --runtype vmc_opt --jastrow u,chi,f
     casino-mcp prepare <src> <dst> --geminal p:2,d:1 -g anchors=1
+    casino-mcp input <job_id|dir>      the keywords a calculation was given, `random_seed` included
     casino-mcp parse <dir-or-out>      an `out` file as JSON
 """
 
@@ -64,6 +67,10 @@ def cmd_run(args) -> int:
 
 def cmd_status(args) -> int:
     return emit(runtime.status(args.job_id))
+
+
+def cmd_wait(args) -> int:
+    return emit(runtime.wait(args.job_id, timeout=args.timeout))
 
 
 def keyword_pairs(settings_list, flag: str = '--set') -> dict:
@@ -130,11 +137,16 @@ def cmd_prepare(args) -> int:
 
 
 def cmd_results(args) -> int:
-    return emit(runtime.results(args.job_id))
+    fields = [field for item in args.field or () for field in item.split(',') if field]
+    return emit(runtime.results(args.job_id, fields=fields or None))
+
+
+def cmd_input(args) -> int:
+    return emit(runtime.calculation_input(args.job_id))
 
 
 def cmd_jobs(args) -> int:
-    return emit(runtime.listing(args.limit))
+    return emit(runtime.listing(args.limit, workdir=args.workdir or ''))
 
 
 def cmd_stop(args) -> int:
@@ -180,12 +192,30 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=cmd_run)
 
     status = sub.add_parser('status', help='state of one job')
-    status.add_argument('job_id')
+    status.add_argument('job_id', help='a job id, or the calculation directory: then the newest job that ran there')
     status.set_defaults(func=cmd_status)
 
+    wait = sub.add_parser('wait', help='block until a running calculation ends')
+    wait.add_argument('job_id', help='a job id, or the calculation directory')
+    wait.add_argument('--timeout', type=float, default=settings.WAIT_TIMEOUT, help='seconds to wait (default: %(default)s)')
+    wait.set_defaults(func=cmd_wait)
+
     results = sub.add_parser('results', help="what one job's files say: the parsed `out`, and dmc.status if the run is still going")
-    results.add_argument('job_id')
+    results.add_argument('job_id', help='a job id, or the calculation directory')
+    results.add_argument(
+        '-f',
+        '--field',
+        action='append',
+        metavar='PATH',
+        help='answer with just this path; repeatable, and comma-separated lists are split. '
+        'vmc/opt/dmc_equil/dmc_stats are the last phase of that kind, opt[3] the cycle CASINO numbered, '
+        'phases[-1] by position, anything else a key of the run (keywords.DTVMC, vmc.efficiency, result.energy)',
+    )
     results.set_defaults(func=cmd_results)
+
+    calc_input = sub.add_parser('input', help='the keywords and blocks a calculation was given')
+    calc_input.add_argument('job_id', help='a job id, or a calculation directory -- including one that has never been run')
+    calc_input.set_defaults(func=cmd_input)
 
     prepare = sub.add_parser('prepare', help='copy a calculation into a new directory and write the input for the next run')
     prepare.add_argument('source', help='the calculation to start from')
@@ -238,10 +268,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = sub.add_parser('jobs', help='every known job, newest first')
     listing.add_argument('-n', '--limit', type=int, default=20)
+    listing.add_argument('-C', '--workdir', help='only the jobs that ran in this directory')
     listing.set_defaults(func=cmd_jobs)
 
     stop = sub.add_parser('stop', help='stop a running job and hand its directory to haltqmc')
-    stop.add_argument('job_id')
+    stop.add_argument('job_id', help='a job id, or the calculation directory')
     stop.add_argument('--timeout', type=float, default=settings.STOP_TIMEOUT, help='seconds before the group is killed (default: %(default)s)')
     stop.set_defaults(func=cmd_stop)
 

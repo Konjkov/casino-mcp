@@ -71,16 +71,18 @@ async def call(session, name, **arguments):
     return (await session.call_tool(name, arguments)).structured_content
 
 
-async def test_the_advertised_tools_are_the_six(example):
+async def test_the_advertised_tools_are_the_eight(example):
     async with mcp_session() as session:
         listed = await session.list_tools()
 
     assert {tool.name for tool in listed.tools} == {
         'casino_run',
         'casino_status',
+        'casino_wait',
         'casino_stop',
         'casino_list_jobs',
         'casino_results',
+        'casino_input',
         'casino_prepare',
     }
     run = next(tool for tool in listed.tools if tool.name == 'casino_run')
@@ -198,3 +200,36 @@ async def test_an_unknown_job_is_an_error_payload_not_a_protocol_error(example):
     # the reply is validated against the output schema on the way out, so every field the runtime
     # had no answer for arrives as a null rather than as an absent key
     assert {key for key, value in result.items() if value is not None} == {'error'}
+
+
+async def test_a_run_is_waited_for_and_read_back_by_its_directory(prepare):
+    """The loop a campaign used to write by hand: run, wait, read -- and never a job id."""
+    scratch = prepare('waited', nstep=20000, nblock=2)
+    async with mcp_session() as session:
+        await call(session, 'casino_run', workdir=str(scratch), nproc=2)
+        waited = await call(session, 'casino_wait', job_id=str(scratch))
+        assert waited['status'] == 'finished' and waited['timed_out'] is False, waited
+        assert waited['waited'] > 0
+
+        results = await call(session, 'casino_results', job_id=str(scratch))
+        assert results['complete'] is True, results
+        vmc = next(phase for phase in results['phases'] if phase['kind'] == 'vmc')
+        assert 0 < vmc['acceptance']['value'] <= 100
+        assert vmc['efficiency']['value'] is not None
+
+        listed = await call(session, 'casino_list_jobs', workdir=str(scratch))
+        assert [job['job_id'] for job in listed['jobs']] == [waited['job_id']]
+
+
+async def test_the_input_of_a_prepared_calculation_is_readable_before_it_runs(prepare):
+    """`random_seed` exists only in the file: CASINO never echoes it into `out`."""
+    scratch = prepare('given', nstep=20000, nblock=2)
+    async with mcp_session() as session:
+        prepared = await call(session, 'casino_prepare', source=str(scratch), dest=str(scratch.parent / 'next'), overrides={'random_seed': '31415'})
+        assert 'error' not in prepared, prepared
+
+        given = await call(session, 'casino_input', job_id=prepared['dest'])
+
+    assert given['keywords']['random_seed'] == '31415'
+    assert given['runtype'] == 'vmc'
+    assert 'job_id' not in given or given['job_id'] is None  # nothing has run there yet

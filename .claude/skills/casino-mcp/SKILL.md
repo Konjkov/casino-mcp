@@ -5,8 +5,8 @@ description: >
   external control layer that lets Claude Code start, watch, stop and read out real CASINO
   calculations instead of shelling out to runqmc by hand. Covers the architecture (launcher
   process + JSON job registry under XDG state, never inside the calculation directory), the
-  tool surface (casino_run / casino_status / casino_stop / casino_list_jobs / casino_results /
-  casino_prepare), why a running DMC job is read from the transient dmc.status and never from
+  tool surface (casino_run / casino_status / casino_wait / casino_stop / casino_list_jobs /
+  casino_results / casino_input / casino_prepare), why a running DMC job is read from the transient dmc.status and never from
   the VMC phase of its own out, how an input is written for a runtype and why the recipe tables
   come from runqmc's own checks, how a blank Jastrow factor and backflow function are written
   for a calculation that has no correlation.data and why CASINO's own testrun is the only oracle
@@ -184,9 +184,11 @@ Without the second, a recycled PID reports a finished job as running.
 | --- | --- |
 | `casino_run(workdir, nproc, restart, resume, unlock)` | job_id, pid, workdir, command, started, removed |
 | `casino_status(job_id)` | running/finished/failed, pid, runtime, exit code |
+| `casino_wait(job_id, timeout)` | blocks until the job ends; `waited`, `timed_out` |
 | `casino_stop(job_id)` | what was signalled, final status, what `haltqmc` did |
-| `casino_list_jobs()` | every known job, newest first |
-| `casino_results(job_id)` | the parsed `out`, plus `dmc.status` when the run has not ended |
+| `casino_list_jobs(limit, workdir)` | every known job, newest first, filtered by directory |
+| `casino_results(job_id, fields)` | the parsed `out`, plus `dmc.status` when the run has not ended; `fields` projects it to a flat {path: value} |
+| `casino_input(job_id)` | the keywords and blocks the calculation was given, and `before_halt` if it was stopped |
 | `casino_prepare(source, dest, runtype, overrides, jastrow, backflow, jastrow_settings, geminal, geminal_settings)` | a new directory with the `input` — and, asked for, the blank `correlation.data` and the `parameters.casl` — the next run needs |
 
 **A running DMC job is read from `dmc.status` or not at all.** CASINO writes the mixed

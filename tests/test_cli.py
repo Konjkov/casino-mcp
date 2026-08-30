@@ -73,16 +73,59 @@ def test_jobs_on_an_empty_registry(capsys):
     assert json.loads(captured.out) == {'jobs': []}
 
 
+def test_wait_and_status_take_a_directory(capsys, workdir, fake_runqmc, python_path):
+    """The shell loop `while pgrep -x casino` replaced, and no job id to carry around."""
+    fake_runqmc(sleep=0.5)
+    code, captured = run(capsys, 'run', str(workdir), '--restart')
+    assert code == 0
+
+    code, captured = run(capsys, 'wait', str(workdir))
+    waited = json.loads(captured.out)
+    assert code == 0 and waited['status'] == 'finished' and waited['timed_out'] is False
+
+    code, captured = run(capsys, 'jobs', '-C', str(workdir))
+    assert [job['job_id'] for job in json.loads(captured.out)['jobs']] == [waited['job_id']]
+
+
+def test_waiting_on_a_directory_nothing_ran_in_exits_nonzero(capsys, workdir):
+    code, captured = run(capsys, 'wait', str(workdir))
+    assert code == 1
+    assert 'no job has run in' in json.loads(captured.out)['error']
+
+
+def test_results_can_be_asked_for_a_few_fields(capsys, workdir, fake_runqmc, python_path, out_file):
+    """What a scan reads: the numbers, not the run."""
+    fake_runqmc(out_text=(out_file('vmc_single')).read_text())
+    run(capsys, 'run', str(workdir), '--restart')
+    run(capsys, 'wait', str(workdir))
+
+    code, captured = run(capsys, 'results', str(workdir), '-f', 'vmc.acceptance,vmc.efficiency', '-f', 'keywords.DTVMC')
+    answer = json.loads(captured.out)
+    assert code == 0
+    assert sorted(answer['fields']) == ['keywords.DTVMC', 'vmc.acceptance', 'vmc.efficiency']
+    assert 'phases' not in answer
+
+    code, captured = run(capsys, 'results', str(workdir), '-f', 'vmc.efficency')
+    assert code == 1
+    assert 'no efficency under vmc' in json.loads(captured.out)['problems'][0]
+
+
+def test_input_reads_a_directory_that_has_never_been_run(capsys, workdir):
+    code, captured = run(capsys, 'input', str(workdir))
+    assert code == 0
+    assert json.loads(captured.out)['keywords']['runtype'] == 'vmc'
+
+
 def test_status_of_an_unknown_job_exits_nonzero(capsys):
     code, captured = run(capsys, 'status', 'nope')
     assert code == 1
-    assert json.loads(captured.out) == {'error': 'unknown job nope'}
+    assert json.loads(captured.out)['error'].startswith('unknown job nope')
 
 
 def test_results_of_an_unknown_job_exits_nonzero(capsys):
     code, captured = run(capsys, 'results', 'nope')
     assert code == 1
-    assert json.loads(captured.out) == {'error': 'unknown job nope'}
+    assert json.loads(captured.out)['error'].startswith('unknown job nope')
 
 
 def test_parse_of_a_running_dmc_directory_reads_dmc_status_too(capsys, out_file):

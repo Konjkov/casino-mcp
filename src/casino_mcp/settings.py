@@ -17,6 +17,10 @@ NPROC = 1  # MPI processes when a tool is not told otherwise
 VERSION = 'opt'  # binary flavour: the directory under bin_qmc/<arch>
 STOP_TIMEOUT = 20.0  # seconds a stopped job is given to end on its own before it is killed
 HALT_TIMEOUT = 60.0  # seconds haltqmc gets to tidy the directory after the job has ended
+# How long casino_wait blocks before answering that the job is still running. Not unbounded:
+# a stdio server answers one call at a time, so a wait is the whole server standing still, and
+# a caller that wants longer calls again rather than holding the plane shut for an afternoon.
+WAIT_TIMEOUT = 600.0
 KEEP_JOBS = 200  # job records kept in the index; the per-job directories are never trimmed
 
 ENVIRONMENT = (
@@ -89,6 +93,7 @@ def resolved() -> dict:
             'version': VERSION,
             'stop_timeout': STOP_TIMEOUT,
             'halt_timeout': HALT_TIMEOUT,
+            'wait_timeout': WAIT_TIMEOUT,
             'keep_jobs': KEEP_JOBS,
         },
         'environment': {name: os.environ.get(name) for name, _ in ENVIRONMENT},

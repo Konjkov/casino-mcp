@@ -63,6 +63,10 @@ SECTIONS = (
     ('GENERAL PARAMETERS', ('use_jastrow', 'backflow', 'random_seed')),
 )
 
+# The same table read the other way round, for placing a keyword by what it is rather than by
+# what it is called: `opt_dtvmc` belongs to VMC whatever its prefix says.
+SECTION_OF = {name: section for section, names in SECTIONS for name in names}
+
 DESCRIPTIONS = {
     'neu': 'Number of up electrons (Integer)',
     'ned': 'Number of down electrons (Integer)',
@@ -520,6 +524,14 @@ def advise(keywords: dict, blocks: dict | None = None) -> list[str]:
         )
     if 'vmc_nstep' in keywords:
         notes.append('vmc_nstep is the total over all MPI processes, unlike dmc_equil_nstep and dmc_stats_nstep, which are per process')
+    if 'vmc' in PHASES.get(runtype, set()) and 'dtvmc' in keywords and number(keywords.get('opt_dtvmc', '1')) != 0:
+        # A scan over dtvmc is the case this ruins: every directory asks for its own step, every
+        # one of them is optimised to the step that gives ~50% acceptance, and the whole grid
+        # measures one point. The step a run actually used is `Optimized DTVMC` in its `out`.
+        notes.append(
+            'dtvmc is set and opt_dtvmc is not 0: CASINO takes the value as a starting point and optimizes the step away from it, '
+            'so a run does not use the dtvmc it was given; set opt_dtvmc : 0 to hold the step where it was put'
+        )
     notes.extend(unused(keywords))
     return notes
 
@@ -530,14 +542,20 @@ def unused(keywords: dict) -> list[str]:
     CASINO does not mind them -- it reads the file and uses what its runtype needs -- but a
     `dmc_stats_nstep` left in a `vmc_opt` input is usually the residue of the calculation this
     one was copied from, and reading it as if it were in force is how a run gets misremembered.
+
+    Which phase a keyword belongs to is `SECTIONS`, not its prefix. `opt_dtvmc` is named like an
+    optimisation keyword and is a VMC one -- it is the VMC phase's own time-step optimisation --
+    so a `runtype : vmc` input that sets it was being told its step would not be read, which is
+    the opposite of what CASINO does with it. A keyword the table does not know is still placed
+    by its prefix: nothing else can place it.
     """
     runtype = keywords.get('runtype', '').strip()
     if runtype not in PHASES:
         return []
     phases = PHASES[runtype]
     notes = []
-    for phase, prefix in (('dmc', 'dmc_'), ('opt', 'opt_')):
-        stale = sorted(name for name in keywords if name.startswith(prefix))
+    for phase, prefix, section in (('dmc', 'dmc_', 'DMC'), ('opt', 'opt_', 'OPTIMIZATION')):
+        stale = sorted(name for name in keywords if name.startswith(prefix) and SECTION_OF.get(name, section) == section)
         if phase not in phases and stale:
             notes.append(f'runtype {runtype} has no {phase.upper()} phase, so CASINO will not read {", ".join(stale)}')
     return notes

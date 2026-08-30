@@ -4,6 +4,70 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
+## [Unreleased]
+
+### Added
+
+- **`casino_wait(job_id, timeout)`** (`casino-mcp wait`): block until a running calculation
+  ends, and answer with the state it ended in, plus `waited` and `timed_out`. A chain is then
+  run, waited for and read back without a polling loop -- what a campaign wrote by hand was
+  `while pgrep -x casino; do sleep 5; done`, or a status call every few seconds, each one a
+  round trip through the model. The wait is bounded (600 s by default, `wait_timeout` in
+  `casino-mcp config`) because a stdio server answers one call at a time, so a wait is the
+  whole control plane standing still; a caller that wants longer calls again. Waiting is not
+  stopping: nothing is signalled and the calculation is not touched.
+- **Every tool that takes a job takes a calculation directory instead** -- `casino_status`,
+  `casino_wait`, `casino_results`, `casino_stop` -- and it means the newest job that ran there.
+  A campaign holds directories: the scan's own loop variable is the directory it prepared, and
+  the job id of the run in it is a string the caller never saw, which is why reading results
+  back meant grepping `out` rather than asking for them. The registry answers the question, so
+  nothing is written into the calculation directory to record it.
+- **`casino_results(job_id, fields=[...])`** (`casino-mcp results -f vmc.efficiency`): answer
+  with just the paths asked for, as one flat `{path: value}`. A parsed run is 10-16 kB of JSON
+  and a scan over 38 directories wanting six numbers from each does not want 600 kB of it --
+  which is why the campaign that prompted this grepped `out` instead of calling the tool. A
+  path is written in the run's own keys, with four rules: `vmc` / `opt` / `dmc_equil` /
+  `dmc_stats` are the last phase of that kind, `opt[3]` and `vmc[2]` the cycle CASINO itself
+  numbered, `phases[-1]` and `phases[0]` a position, and anything else is a key --
+  `keywords.DTVMC`, `cpu_time`, `result.energy`, `vmc.energy.error`, `vmc.blocks[0].time`,
+  `status`. A path that lands on a measured value collapses to the number. A path that does not
+  exist is a mistake in the question and comes back in `problems` naming what is there instead;
+  a path that exists but holds a number CASINO never printed comes back as null with its reason
+  -- the two are different things and the projection keeps them apart. The same selector is what
+  a scan tool will project its table with, rather than a second one beside it.
+- **`casino_input(job_id)`** (`casino-mcp input`): the keywords and `%block`s a calculation was
+  given, as data. `results` answers what a run did and this answers what it was told to do, and
+  the two are not the same reading: the `keywords` in a result are CASINO's own echo, which
+  holds every default it applied -- 70 entries against the 23 a file typically sets -- and drops
+  what it does not print. `random_seed` is one of those, and it is the keyword the question
+  "can this number be reproduced" turns on. It reads a directory nothing has run in, which is
+  how a prepared calculation is checked before there is a job to name it by, and for a job that
+  casino_stop halted it also returns `before_halt`: the `input` the run was started from, kept
+  in the registry because `haltqmc -u` rewrites the file in place and the rewrite is lossy.
+- `casino_list_jobs(limit, workdir)` filters to one directory: what a chain of runs did in one
+  place, and the way to see that a directory has been run twice.
+
+### Changed
+
+- The job index records `created_epoch` beside `created`. A job id is only chronological to the
+  second, and two runs of one directory a second apart -- which is what a scan does -- cannot be
+  told apart by it. A record written before this falls back to its id, which is all it has.
+- **`casino_results` says what it returns.** Its description named energies and per-block
+  numbers and nothing else, while the parser had been returning `acceptance`,
+  `correlation_time`, `efficiency`, the optimized `dtvmc`, `steps_per_process` and the whole
+  statistical-efficiency section all along — so the way to those numbers was to grep `out` for
+  them. The docstring now lists what a phase holds, by kind, and a test holds it to the parser.
+
+### Fixed
+
+- `advise` no longer tells a `runtype : vmc` input that CASINO will not read its `opt_dtvmc`.
+  `unused` placed a keyword by its prefix, and `opt_dtvmc` is named like an optimisation
+  keyword and is a VMC one — the VMC phase's own time-step optimisation. Which phase a keyword
+  belongs to is `SECTIONS` now; a keyword the table does not know is still placed by its prefix.
+- The trap that is real is the other way round, and `advise` now warns about it: `dtvmc` set
+  while `opt_dtvmc` is not 0 means CASINO takes the value as a starting point and optimizes the
+  step away from it, so a scan over `dtvmc` measures one step in every directory.
+
 ## [0.5.0] — 2026-08-30
 
 A geminal wave function can be written now, which is the third file at the start of a chain

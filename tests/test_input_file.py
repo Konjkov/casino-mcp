@@ -311,6 +311,24 @@ def test_keywords_left_over_from_the_calculation_this_was_copied_from():
     assert any('no DMC phase' in note and 'dmc_stats_nstep' in note for note in notes)
 
 
+def test_opt_dtvmc_is_a_vmc_keyword_whatever_its_prefix_says():
+    """The false positive that cost a campaign: `runtype : vmc` was told its step would not be read."""
+    notes = input_file.advise({'runtype': 'vmc', 'opt_dtvmc': '0'})
+    assert not any('opt_dtvmc' in note and 'will not read' in note for note in notes)
+    # a real optimization keyword in the same file is still called out
+    notes = input_file.advise({'runtype': 'vmc', 'opt_dtvmc': '0', 'opt_cycles': '4'})
+    assert any('no OPT phase' in note and 'opt_cycles' in note and 'opt_dtvmc' not in note for note in notes)
+
+
+def test_a_step_that_is_asked_for_and_then_optimized_away():
+    """What ruins a scan over dtvmc: every point is optimized to the same ~50% acceptance step."""
+    notes = input_file.advise({'runtype': 'vmc', 'dtvmc': '0.1'})
+    assert any('optimizes the step away from it' in note for note in notes)
+    assert not any('optimizes the step away' in note for note in input_file.advise({'runtype': 'vmc', 'dtvmc': '0.1', 'opt_dtvmc': '0'}))
+    # and it is a VMC phase's business: a dmc-only runtype has no step to optimize
+    assert not any('optimizes the step away' in note for note in input_file.advise({'runtype': 'dmc_stats', 'dtvmc': '0.1'}))
+
+
 def test_a_pseudopotential_run_is_asked_about_tmove(tmp_path):
     (tmp_path / 'be_pp.data').touch()
     notes = input_file.advise_files(tmp_path, {'runtype': 'vmc_dmc'})

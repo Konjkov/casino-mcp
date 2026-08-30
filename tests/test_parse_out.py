@@ -14,9 +14,11 @@ The heavier oracles live in tests/integration: the same parser against CASINO's 
 and against a freshly built CASINO. This suite is the part that runs anywhere, in a second.
 """
 
+import json
+
 import pytest
 
-from casino_mcp.parse_out import parse_dmc_status, parse_out
+from casino_mcp.parse_out import parse_dmc_status, parse_out, select
 
 pytestmark = pytest.mark.filterwarnings('error')
 
@@ -240,3 +242,67 @@ def test_directory_and_file_are_both_accepted(out_file):
 def test_missing_file_raises_oserror(tmp_path):
     with pytest.raises(OSError):
         parse_out(tmp_path / 'nowhere')
+
+
+# --- the field selector ---------------------------------------------------------------
+
+
+def test_a_phase_kind_means_the_last_phase_of_that_kind(out_file):
+    parsed = parse_out(out_file('vmc_opt_emin'))
+    values, reasons, problems = select(parsed, ['vmc.acceptance', 'vmc.efficiency', 'vmc.correlation_time', 'vmc.dtvmc', 'cpu_time'])
+
+    assert problems == [] and reasons == {}
+    assert values == {
+        'vmc.acceptance': 45.419,
+        'vmc.efficiency': 94809000.0,
+        'vmc.correlation_time': 3.1413,
+        'vmc.dtvmc': 0.74042,
+        'cpu_time': 11.78,
+    }
+    # the last vmc phase, which in a vmc_opt run is the post-fit one and not cycle 1
+    assert values['vmc.acceptance'] == parsed['phases'][-1]['acceptance']['value']
+
+
+def test_a_cycle_is_addressed_by_the_number_casino_gave_it(out_file):
+    parsed = parse_out(out_file('vmc_opt_emin'))
+    values, _, problems = select(parsed, ['opt[3].nparam', 'opt[3].method', 'phases[0].kind', 'phases[-1].kind'])
+
+    assert problems == []
+    assert values == {'opt[3].nparam': 11.0, 'opt[3].method': 'emin', 'phases[0].kind': 'vmc', 'phases[-1].kind': 'vmc'}
+
+
+def test_the_step_asked_for_against_the_step_the_run_used(out_file):
+    """The pair that catches an opt_dtvmc scan measuring one point 38 times."""
+    values, _, _ = select(parse_out(out_file('vmc_single')), ['keywords.DTVMC', 'vmc.dtvmc'])
+
+    assert values['keywords.DTVMC'] == '1.0000E-02'
+    assert values['vmc.dtvmc'] == 9.4391e-02
+
+
+def test_a_number_casino_did_not_print_is_null_with_its_reason(out_file):
+    parsed = parse_out(out_file('interrupted'))
+    values, reasons, problems = select(parsed, ['cpu_time', 'ended'])
+
+    assert problems == []
+    assert values == {'cpu_time': None, 'ended': None}
+    assert 'did not reach the timing report' in reasons['cpu_time']
+
+
+def test_a_path_that_does_not_exist_is_a_mistake_in_the_question(out_file):
+    parsed = parse_out(out_file('vmc_single'))
+    values, _, problems = select(parsed, ['vmc.efficency', 'dmc_stats.energy', 'vmc[9].energy', 'nonsense.x', 'vmc.blocks[7]'])
+
+    assert values == {}
+    assert 'no efficency under vmc' in problems[0] and 'efficiency' in problems[0]  # what is there instead
+    assert 'no dmc_stats phase' in problems[1]
+    assert 'numbered' in problems[2]
+    assert 'no nonsense under the top level' in problems[3]
+    assert 'so there is no vmc.blocks[7]' in problems[4]
+
+
+def test_the_projection_is_two_orders_of_magnitude_smaller(out_file):
+    """The reason it exists: six numbers a point instead of the whole run, 38 times over."""
+    parsed = parse_out(out_file('vmc_dmc'))
+    values, _, _ = select(parsed, ['dmc_stats.energy', 'dmc_stats.variance', 'dmc_stats.target_weight', 'cpu_time'])
+
+    assert len(json.dumps(values)) < len(json.dumps(parsed)) / 50

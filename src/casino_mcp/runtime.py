@@ -638,15 +638,40 @@ def start(
     return started
 
 
-def status(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
-    store = store or jobs.JobStore()
+class UnknownJob(Exception):
+    """Neither a job id the registry knows nor a directory anything has run in."""
+
+
+def find(job_id: str, store: jobs.JobStore) -> dict[str, Any]:
+    """The state of a job named either by its id or by the directory it ran in.
+
+    A campaign holds directories: the scan's own loop variable is the directory it prepared,
+    and the id of the run in it is a string it never saw. Rather than have every caller pair
+    the two up through the listing by eye, the registry does it -- the newest job of that
+    directory, which is the run that produced what is in it now.
+    """
     try:
         return store.status(job_id)
     except KeyError:
-        return {'error': f'unknown job {job_id}'}
+        pass
+    path = Path(job_id).expanduser()
+    if path.is_dir():
+        latest = store.latest(path)
+        if latest is None:
+            raise UnknownJob(f'no job has run in {path.resolve()}: prepared directories have no job until casino_run starts one')
+        return store.status(latest)
+    raise UnknownJob(f'unknown job {job_id}: not a job id in the registry, and not a directory')
 
 
-def results(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
+def status(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
+    store = store or jobs.JobStore()
+    try:
+        return find(job_id, store)
+    except UnknownJob as e:
+        return {'error': str(e)}
+
+
+def results(job_id: str, fields=None, store: jobs.JobStore | None = None) -> dict[str, Any]:
     """What one job's files say: the parsed `out`, and the live estimate beside it.
 
     A job, not a file: the state of the run is what tells the caller whether these numbers are
@@ -654,12 +679,17 @@ def results(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
     physics all comes from `parse_out`, which reads `out` and, if the run is a DMC one that has
     not ended, the `dmc.status` next to it -- so a running calculation answers with the estimate
     as of its last block instead of with nothing.
+
+    `fields` projects the report down to the paths asked for (`parse_out.select`), which is what
+    a scan wants: six numbers a point rather than the 16 kB the whole of one is. The projection
+    runs over the job's state as well as the physics, so `status` and `workdir` are paths too.
     """
     store = store or jobs.JobStore()
     try:
-        state = store.status(job_id)
-    except KeyError:
-        return {'error': f'unknown job {job_id}'}
+        state = find(job_id, store)
+    except UnknownJob as e:
+        return {'error': str(e)}
+    job_id = state['job_id']
 
     workdir = Path(state['workdir'])
     out = workdir / 'out'
@@ -688,12 +718,82 @@ def results(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
         report['note'] = (
             'CASINO has written its timing report, so these numbers are final; the job is still marked running because runqmc has not exited yet'
         )
+    if fields:
+        return project(report, fields)
     return report
 
 
-def listing(limit: int = 20, store: jobs.JobStore | None = None) -> dict[str, Any]:
+def project(report: dict[str, Any], fields) -> dict[str, Any]:
+    """The report cut down to the paths asked for, or the paths that do not exist.
+
+    A path that is not in the run is a mistake in the question, and answering the rest of it as
+    if nothing were wrong is how a scan ends up with a column of nulls it believes.
+    """
+    values, reasons, problems = parse_out.select(report, fields)
+    answer = {key: report[key] for key in ('job_id', 'status', 'workdir', 'path', 'complete') if key in report}
+    if problems:
+        answer['error'] = f'{len(problems)} of {len(fields)} fields are not in this run'
+        answer['problems'] = problems
+        return answer
+    answer['fields'] = values
+    if reasons:
+        answer['reasons'] = reasons
+    return answer
+
+
+def calculation_input(job_id: str, store: jobs.JobStore | None = None) -> dict[str, Any]:
+    """The `input` of a calculation: what it was told to do, not what it did.
+
+    A reading of its own and not a corner of `results`, because the two answer different
+    questions. `results` carries CASINO's own echo of the keywords, which is neither the file
+    nor a superset of it: it holds the defaults CASINO applied -- 70 entries where the file has
+    23 -- and drops the keywords it does not print, of which `random_seed` is the one that
+    decides whether a run can be reproduced at all.
+
+    A directory nothing has ever run in is read too, which is half the point of taking one: it
+    is how a prepared calculation is checked before there is a job to name it by.
+    """
     store = store or jobs.JobStore()
-    return {'jobs': store.all_status()[:limit]}
+    state = None
+    try:
+        state = find(job_id, store)
+    except UnknownJob as e:
+        if not Path(job_id).expanduser().is_dir():
+            return {'error': str(e)}
+    workdir = Path(state['workdir']) if state else Path(job_id).expanduser()
+    path = workdir / 'input'
+    if not path.is_file():
+        return {'error': f'no CASINO `input` in {workdir.resolve()}', 'workdir': str(workdir.resolve())}
+    try:
+        parsed = input_file.read(path)
+    except OSError as e:
+        return {'error': f'cannot read {path}: {e}'}
+
+    answer: dict[str, Any] = {'workdir': str(workdir.resolve()), 'path': parsed['path'], 'runtype': parsed['runtype']}
+    if state:
+        answer['job_id'] = state['job_id']
+        answer['status'] = state['status']
+    answer['keywords'] = parsed['keywords']
+    answer['blocks'] = parsed['blocks']
+    if state:
+        # What the run was started from, when haltqmc has since rewritten the file in place.
+        # Without it "what was this asked to do" has no answer for a job that was stopped and
+        # continued: haltqmc's rewrite is what makes the continuation work, and it is lossy.
+        before = jobs.jobs_dir() / state['job_id'] / 'input.before_halt'
+        if before.is_file():
+            saved = input_file.read(before)
+            answer['before_halt'] = {'path': saved['path'], 'keywords': saved['keywords'], 'blocks': saved['blocks']}
+            answer['note'] = 'casino_stop let haltqmc rewrite `input`; `before_halt` is the file this job was started from'
+    return answer
+
+
+def listing(limit: int = 20, workdir: str = '', store: jobs.JobStore | None = None) -> dict[str, Any]:
+    store = store or jobs.JobStore()
+    found = store.all_status()
+    if workdir:
+        wanted = Path(workdir).expanduser().resolve()
+        found = [state for state in found if Path(state['workdir']).resolve() == wanted]
+    return {'jobs': found[:limit]}
 
 
 def casino_processes(session: int) -> list[int]:
@@ -800,6 +900,29 @@ def wait_while_running(job_id: str, store: jobs.JobStore, deadline: float) -> di
     return store.status(job_id)
 
 
+def wait(job_id: str, timeout: float = settings.WAIT_TIMEOUT, store: jobs.JobStore | None = None) -> dict[str, Any]:
+    """Block until this job is no longer running, and answer with what it became.
+
+    The alternative a caller is left with otherwise is a polling loop of its own -- `while pgrep
+    -x casino; do sleep 5; done`, or a status call every few seconds, each one a round trip
+    through the model. The wait ends when the job does, or when `timeout` runs out, and
+    `timed_out` says which happened.
+    """
+    store = store or jobs.JobStore()
+    try:
+        state = find(job_id, store)
+    except UnknownJob as e:
+        return {'error': str(e)}
+    started = time.time()
+    if state['status'] == 'running':
+        state = wait_while_running(state['job_id'], store, started + timeout)
+    state['waited'] = round(time.time() - started, 1)
+    state['timed_out'] = state['status'] == 'running'
+    if state['timed_out']:
+        state['note'] = f'still running after {timeout:.0f} s; call again to keep waiting'
+    return state
+
+
 def stop(job_id: str, timeout: float = settings.STOP_TIMEOUT, store: jobs.JobStore | None = None) -> dict[str, Any]:
     """Stop a running calculation the way CASINO stops one, then let haltqmc tidy up.
 
@@ -814,9 +937,10 @@ def stop(job_id: str, timeout: float = settings.STOP_TIMEOUT, store: jobs.JobSto
     """
     store = store or jobs.JobStore()
     try:
-        state = store.status(job_id)
-    except KeyError:
-        return {'error': f'unknown job {job_id}'}
+        state = find(job_id, store)
+    except UnknownJob as e:
+        return {'error': str(e)}
+    job_id = state['job_id']
     if state['status'] != 'running':
         return {'job_id': job_id, 'status': state['status'], 'note': 'not running, nothing to stop'}
 
