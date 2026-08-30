@@ -217,6 +217,22 @@ def test_interrupted_run_invents_no_energy(out_file):
         assert parsed[key]['reason']
 
 
+def test_a_file_with_no_phase_in_it_parses_to_no_phases(tmp_path):
+    """A run that errstopped before its first phase, and anything that is not an `out` at all.
+
+    `split_phases` paired each phase with the next one under `strict=True`, and with no phase
+    there was still a sentinel to pair it against, so this raised ValueError out of
+    `casino_results` instead of answering -- for the very run whose failure has to be read.
+    """
+    path = tmp_path / 'out'
+    path.write_text(' Started 2026/08/25 13:48:02.391\n\n Cannot open gwfn.data\n')
+    parsed = parse_out(path)
+    assert parsed['phases'] == []
+    assert parsed['complete'] is False
+    assert parsed['result'] == {'value': None, 'reason': 'no phase in this file reports an energy'}
+    assert parsed['started']['value'] is not None  # what the file does say is still read
+
+
 def test_block_means_are_labelled_derived(out_file):
     """A derived number must say so, and must never sit where a printed one would."""
     parsed = parse_out(out_file('interrupted'))

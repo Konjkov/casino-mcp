@@ -101,6 +101,14 @@ All notable changes to this project are documented here. The format follows
   report: the exact arguments, which a joined string cannot be parsed back into.
 - `casino_prepare` no longer sends `wrote: null` alongside a refusal. It was there to say
   nothing had been written, which is what the refusal says.
+- **`parse_out` no longer raises on an `out` with no phase in it.** `split_phases` paired each
+  phase with the one after it under `strict=True`, and with no phase there was still a
+  sentinel to pair against, so a file that never reached VMC — a run that errstopped on a
+  missing `gwfn.data`, say — came back as `ValueError: zip() argument 2 is longer than
+  argument 1` out of `casino_results` instead of as a parsed file. Which is the reading that
+  matters most there: it is the run whose failure has to be looked at. `block_bounds` had the
+  same shape for a phase cut off before it finished a block. Both answer with an empty list
+  now, and the rest of the file — `Started`, the messages CASINO printed — is read as ever.
 
 ## [0.5.0] — 2026-08-30
 

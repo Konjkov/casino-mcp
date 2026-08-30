@@ -229,6 +229,11 @@ def split_phases(lines):
                 number = int(index[0]) if index and index[0] is not None else None
                 phases.append({'kind': kind, 'label': stripped, 'index': number, 'start': i})
                 break
+    # Each phase runs to where the next one starts, and the last to the end of the file. With no
+    # phase at all there is nothing to pair -- a run that errstopped before its first one, or a
+    # file that is not an `out` -- and the empty list is the honest answer, not an exception.
+    if not phases:
+        return phases
     for phase, following in zip(phases, phases[1:] + [{'start': len(lines)}], strict=True):
         phase['end'] = following['start']
     return phases
@@ -236,6 +241,8 @@ def split_phases(lines):
 
 def block_bounds(lines, start, end):
     starts = [i for i in range(start, end) if lines[i].strip().startswith('In block :')]
+    if not starts:
+        return []  # a phase cut off before it finished a block, for the same reason as above
     return list(zip(starts, starts[1:] + [end], strict=True))
 
 
