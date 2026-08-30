@@ -151,9 +151,13 @@ every parameter of it lives in the `GEMINAL` block of a `parameters.casl`. CASIN
 utility that writes one either, so `casino_prepare(..., geminal=[...])` does:
 
 ```python
-casino_prepare('./hf', './gem', geminal=[])                 # the Hartree-Fock geminal alone
-casino_prepare('./hf', './gem', geminal=['p:2', 'd:1'],     # ... and a correlating one over
-               geminal_settings={'anchors': [1]})           #     the first two p and first d levels
+casino_prepare('./hf', './gem', geminal=[])  # the Hartree-Fock geminal alone
+casino_prepare(
+    './hf',
+    './gem',
+    geminal=['p:2', 'd:1'],  # ... and a correlating one over
+    geminal_settings={'anchors': [1]},
+)  #     the first two p and first d levels
 ```
 
 * **`geminal=[]` is the Hartree-Fock determinant, exactly.** `g_m,m = 1` over the doubly
@@ -402,9 +406,9 @@ above:
 ```python
 from casino_mcp import geminal
 
-orbitals = geminal.read_orbitals('./hf/gwfn.data')          # orbitals, not atoms
-levels = geminal.mo_levels(orbitals)                        # {1: [([3, 5, 4], True), ...], ...}
-shells, diagonal, problems, notes = geminal.select(levels, [(1, 2)])   # the first two p levels
+orbitals = geminal.read_orbitals('./hf/gwfn.data')  # orbitals, not atoms
+levels = geminal.mo_levels(orbitals)  # {1: [([3, 5, 4], True), ...], ...}
+shells, diagonal, problems, notes = geminal.select(levels, [(1, 2)])  # the first two p levels
 text = geminal.geminal_section([1, 2], [], [1], shells, diagonal)
 ```
 
