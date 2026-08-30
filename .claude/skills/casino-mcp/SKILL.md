@@ -10,13 +10,16 @@ description: >
   the VMC phase of its own out, how an input is written for a runtype and why the recipe tables
   come from runqmc's own checks, how a blank Jastrow factor and backflow function are written
   for a calculation that has no correlation.data and why CASINO's own testrun is the only oracle
-  for them, the guardrails that stop a run from overwriting committed reference data in
+  for them, how the GEMINAL block of a parameters.casl is written for a psi_s : geminal
+  calculation and where its degenerate levels and constraint groups come from,
+  the guardrails that stop a run from overwriting committed reference data in
   examples/, why stopping and continuing a run go through haltqmc and runqmc
   rather than through signals and file moves of our own, why the pid that matters is the
   launcher's session and not runqmc's, and the staged plan with what was accepted and what was
   rejected from the original proposal. Trigger on: MCP, casino-mcp, mcp server, job manager,
   job id, casino_run, casino_results, casino_prepare, dmc.status, input_file, correlation.data,
-  correlation_data, blank Jastrow, backflow, u/chi/f and eta/mu/phi terms, .mcp.json,
+  correlation_data, blank Jastrow, backflow, u/chi/f and eta/mu/phi terms, parameters.casl,
+  CASL, geminal, psi_s, GEMINAL block, g_m,k and u_m,k parameters, .mcp.json,
   FastMCP/MCPServer. See casino-run for how CASINO itself is driven and what its output files
   contain.
 ---
@@ -30,13 +33,15 @@ Since 0.1.0 it is a standalone pip-installable package with its own repository, 
 directory inside PyCasino. Layout:
 
 ```
-pyproject.toml             casino-mcp 0.4.0, entry point `casino-mcp`. The only TOML here
+pyproject.toml             casino-mcp 0.5.0, entry point `casino-mcp`. The only TOML here
 src/casino_mcp/
     settings.py    where CASINO is, where our state goes: the environment, and constants
     parse_out.py   CASINO `out` + `dmc.status` -> structured phases (no MCP, no dependencies)
     input_file.py  CASINO `input`: read, edit, and write one per runtype (same, text in/out)
     correlation_data.py  a blank Jastrow (u/chi/f) and backflow (eta/mu/phi) for a
                          calculation that has neither
+    geminal.py     the GEMINAL block of a `parameters.casl`: the levels off the orbital file,
+                   the constraints that tie them, the unpaired columns an open shell needs
     jobs.py        job registry, state dir, process liveness
     runtime.py     prepare / start / status / stop / results. No MCP in this module
     server.py      MCPServer + tool definitions. A thin wrapper over runtime
@@ -44,7 +49,7 @@ src/casino_mcp/
     cli.py         `casino-mcp serve | config | run | status | stop | jobs | results |
                     prepare | parse`
 examples/          18 real calculations, a settings cover. The only tree the tests read
-tests/             278 unit tests, no CASINO needed; tests/integration is opt-in
+tests/             337 unit tests, no CASINO needed; tests/integration is opt-in
 tools/protocol_dump.py     the JSON-RPC by hand, no SDK. Read before adding a tool
 .mcp.json          registration for Claude Code (project scope)
 ```
@@ -182,7 +187,7 @@ Without the second, a recycled PID reports a finished job as running.
 | `casino_stop(job_id)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs()` | every known job, newest first |
 | `casino_results(job_id)` | the parsed `out`, plus `dmc.status` when the run has not ended |
-| `casino_prepare(source, dest, runtype, overrides, jastrow, jastrow_settings)` | a new directory with the `input` — and, asked for, the blank `correlation.data` — the next run needs |
+| `casino_prepare(source, dest, runtype, overrides, jastrow, backflow, jastrow_settings, geminal, geminal_settings)` | a new directory with the `input` — and, asked for, the blank `correlation.data` and the `parameters.casl` — the next run needs |
 
 **A running DMC job is read from `dmc.status` or not at all.** CASINO writes the mixed
 estimators into `out` once, at the very end of the run (`write_dmc_status(final=.true.)` in
@@ -240,6 +245,43 @@ by hand. `correlation_data` writes both, under
 - Finite systems only: a periodic Jastrow wants a P term whose stars come from `make_p_stars`.
   A keyword that is on with no block, and a block written for a keyword that is off, are both
   refused — the two halves of the same mistake.
+
+**The GEMINAL block of a `parameters.casl` is the third file nobody else writes.** `psi_s :
+geminal` pairs the electrons — `Psi_S = sum_n c_n det M^(n)`, `Phi_n = sum_mk g^(n)_mk phi_m
+phi_k` — and every c and g of it is in that one block. `geminal.py` writes it, under
+`casino_prepare(geminal=[...], geminal_settings={...})`, where the list holds the *channels*
+to correlate: `[]` for the Hartree-Fock geminal alone, `['p:2', 'd:1']` for the first two p
+levels and the first d level. What holds it together:
+
+- **CASL is not YAML.** `2^g_5,5=2^g_4,4` is a bare scalar no YAML parser accepts, so the block
+  is plain text. `read_casl_file` strips `#` comments, which is what makes the provenance line
+  free.
+- **The orbitals come from the orbital file and the occupation from `input`.** The mirror image
+  of the Jastrow's split: `neu`/`ned` say which orbitals the reference determinant fills and how
+  many unpaired columns there are, `gwfn.data` says which orbitals form a degenerate level.
+  Channels therefore need a gaussian basis; a channel-less geminal reads no orbital file at all
+  and works for any of them.
+- **A level is tied component by component, or it is not tied off-diagonally at all.** Each MO
+  is classified by the (l, m-slot) carrying its weight, after the solid-harmonic constants
+  CASINO premultiplies into d coefficients — and, per `molden2qmc.py:d_normalize`, *not* into f
+  and g ones — are divided back out. A level whose orbitals are not one clean m-component each
+  is demoted to a diagonal-only tie with a warning: a component-wise tie between two levels
+  mixed differently constrains orbitals that are not each other's counterparts.
+- **The unpaired columns go in every geminal, not just the first.** `check_umat` errstops on any
+  geminal with a non-zero c whose unpaired column is empty — an empty column makes M singular at
+  every configuration — and `parse_umat_el` refuses an optimizable `u`, so they are written
+  fixed. This is the half the original script had no notion of, and the reason an open-shell
+  case is in the integration suite.
+- **A correlating geminal cannot start from zeros.** Unlike a Jastrow factor, a pairing matrix
+  with an empty diagonal is singular, so the two leading channels start at `seed` / `seed2`
+  (−0.05, −0.02, the values the committed examples start from; the Be 2s–2p near-degeneracy
+  wants −0.19).
+- **The oracle is `testrun : T` again**, plus the committed examples: the unit suite asserts
+  that what this writes for the geminal calculations in `examples/` declares the same parameters
+  and imposes the same constraint groups as their hand-written files, and
+  `tests/integration/test_geminal_casl.py` makes the check the manual recommends — the
+  Hartree-Fock geminal has to give the `psi_s : slater` energy of the same system, inside the
+  error bars. That is the only test that catches an orbital index meaning something else.
 
 **A dirty directory has two exits, not one.** `runqmc` appends to `out` and to the `.hist`
 files, so a permission to start in a directory that already holds them is not enough — the
@@ -327,6 +369,12 @@ Then, in order:
    *(done: `correlation_data.py`, `casino_prepare(jastrow=[...], backflow=[...])`.)* Jastrow
    u/chi/f and backflow eta/mu/phi, for finite systems. The periodic P term is the one piece
    deliberately left out: its stars of reciprocal lattice vectors need `make_p_stars`.
+8. ~~The `parameters.casl` a geminal wave function needs, so a `psi_s : geminal` chain can start
+   the same way.~~ *(done: `geminal.py`, `casino_prepare(geminal=[...])`.)* Ported from a
+   standalone numpy script of the author's and made part of the layer: no numpy (the package has
+   one dependency and it is the MCP SDK), the occupation taken from `input` instead of guessed
+   from the orbital file's electron count, and the unpaired columns an open shell needs — which
+   the script never wrote, and without which `check_umat` errstops.
 
 Extracting the package before step 1 would have meant designing HTTP, SLURM and Tasks for
 users who did not exist yet, instead of having a working parser. Steps 5 and 6 were the same
@@ -404,7 +452,7 @@ It is the first thing to run when a tool call refuses.
 ## Testing
 
 ```
-pytest                     # 222 tests, ~6 s, no CASINO
+pytest                     # 337 tests, ~6 s, no CASINO
 pytest -m integration      # needs runqmc/envmc, but nothing outside this repository
 ```
 
@@ -464,6 +512,11 @@ The integration suite needs a real installation and is deselected by default:
   Slater-type) against three term combinations of each, the cutoff defaults CASINO chooses, the
   cusp type it is handed, and the two orders it refuses. ~55 s. `runqmc --check-only` cannot
   stand in: it never opens `correlation.data`.
+- `tests/integration/test_geminal_casl.py` — every `parameters.casl` this writes put to the same
+  `testrun : T`, closed shell and open: the block parsed, the constraint groups resolved without
+  contradiction, `check_umat` satisfied. The last test is a pair of real VMC runs — the
+  Hartree-Fock geminal against `psi_s : slater` — which is the only check that the orbital
+  indices written mean what they are meant to. ~15 s.
 - `tests/integration/test_client_smoke.py` — real stdio MCP against the installed
   `casino-mcp serve`: the tool schemas, the guardrail, a short VMC to completion, a long one
   stopped, and a job that outlives the server that started it.

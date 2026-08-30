@@ -178,6 +178,37 @@ def test_a_jastrow_setting_that_is_not_a_number_is_refused(capsys, tmp_path):
         run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--jastrow', '-j', 'n_u=eight')
 
 
+def test_prepare_takes_the_geminal_channels_as_a_list(monkeypatch, capsys, tmp_path):
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(**kwargs) or {})
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--geminal', 'p:2,d:1', '-g', 'seed=-0.19', '-g', 'anchors=1,2')
+
+    assert seen['geminal'] == ['p:2', 'd:1']
+    assert seen['geminal_settings'] == {'seed': -0.19, 'anchors': [1, 2]}, 'a seed is a number and the anchors are a list of orbitals'
+
+
+def test_a_bare_geminal_flag_is_the_hartree_fock_one(monkeypatch, capsys, tmp_path):
+    """No channels is a decision -- Geminal 1 alone -- and not the same as not asking at all."""
+    seen = {}
+    monkeypatch.setattr(cli.runtime, 'prepare', lambda source, dest, **kwargs: seen.update(**kwargs) or {})
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--geminal')
+    assert seen['geminal'] == []
+
+    seen.clear()
+    run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'))
+    assert seen['geminal'] is None, 'a parameters.casl is written only when it is asked for'
+
+
+def test_a_geminal_setting_that_is_not_a_number_is_refused(capsys, tmp_path):
+    with pytest.raises(SystemExit, match='expects a number'):
+        run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--geminal', '-g', 'seed=low')
+
+
+def test_anchors_that_are_not_orbital_numbers_are_refused(capsys, tmp_path):
+    with pytest.raises(SystemExit, match='expects orbital numbers'):
+        run(capsys, 'prepare', str(tmp_path / 'a'), str(tmp_path / 'b'), '--geminal', '-g', 'anchors=first')
+
+
 def test_stop_forwards_its_timeout(monkeypatch, capsys):
     seen = {}
     monkeypatch.setattr(cli.runtime, 'stop', lambda job_id, **kwargs: seen.update(job_id=job_id, **kwargs) or {})

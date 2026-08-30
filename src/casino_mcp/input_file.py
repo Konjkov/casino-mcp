@@ -562,7 +562,11 @@ def check_files(directory, keywords: dict, writing: tuple[str, ...] = ()) -> lis
         and not (directory / 'correlation.data').is_file()
     ):
         errors.append(f'use_jastrow / backflow read correlation.data, and there is none in {directory}')
-    if (truthy(keywords.get('use_gjastrow')) or keywords.get('psi_s', '').strip() == 'geminal') and not (directory / 'parameters.casl').is_file():
+    if (
+        'parameters.casl' not in writing
+        and (truthy(keywords.get('use_gjastrow')) or keywords.get('psi_s', '').strip() == 'geminal')
+        and not (directory / 'parameters.casl').is_file()
+    ):
         errors.append(f'psi_s : geminal / use_gjastrow read parameters.casl, and there is none in {directory}')
     runtype = keywords.get('runtype', '').strip()
     if (runtype in NEEDS_CONFIGS or not truthy(keywords.get('newrun', 'T'))) and not configurations(directory):

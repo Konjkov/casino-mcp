@@ -11,6 +11,7 @@ whose state can only be inspected through the model that started it is not debug
     casino-mcp results <job_id>        the physics of one job, live runs included
     casino-mcp prepare <src> <dst> --runtype vmc_dmc -s dtdmc=0.005
     casino-mcp prepare <src> <dst> --runtype vmc_opt --jastrow u,chi,f
+    casino-mcp prepare <src> <dst> --geminal p:2,d:1 -g anchors=1
     casino-mcp parse <dir-or-out>      an `out` file as JSON
 """
 
@@ -18,7 +19,7 @@ import argparse
 import json
 import sys
 
-from casino_mcp import __version__, correlation_data, input_file, parse_out, runtime, settings
+from casino_mcp import __version__, correlation_data, geminal, input_file, parse_out, runtime, settings
 
 
 def emit(data) -> int:
@@ -95,6 +96,23 @@ def jastrow_numbers(settings_list) -> dict:
     return pairs
 
 
+def geminal_values(settings_list) -> dict:
+    """`-g seed=-0.19` pairs; `anchors` is a list of orbitals and everything else is a number."""
+    values = {}
+    for name, value in keyword_pairs(settings_list, '--geminal-set').items():
+        if name == 'anchors':
+            orbitals = [orbital.strip() for orbital in (value or '').split(',') if orbital.strip()]
+            if not all(orbital.isdigit() for orbital in orbitals):
+                raise SystemExit(f'--geminal-set anchors expects orbital numbers, got {value!r}')
+            values[name] = [int(orbital) for orbital in orbitals]
+            continue
+        number = input_file.number(value)
+        if number is None:
+            raise SystemExit(f'--geminal-set expects a number, got {name}={value!r}')
+        values[name] = number if name in ('seed', 'seed2', 'purity') else int(number)
+    return values
+
+
 def cmd_prepare(args) -> int:
     return emit(
         runtime.prepare(
@@ -105,6 +123,8 @@ def cmd_prepare(args) -> int:
             jastrow=term_names(args.jastrow, correlation_data.TERMS),
             backflow=term_names(args.backflow, correlation_data.BACKFLOW_TERMS),
             jastrow_settings=jastrow_numbers(args.jastrow_set),
+            geminal=term_names(args.geminal, ()),
+            geminal_settings=geminal_values(args.geminal_set),
         )
     )
 
@@ -198,6 +218,21 @@ def build_parser() -> argparse.ArgumentParser:
         action='append',
         metavar='NAME=VALUE',
         help=f'one Jastrow or backflow setting; repeatable ({", ".join(sorted(correlation_data.DEFAULTS))})',
+    )
+    prepare.add_argument(
+        '--geminal',
+        nargs='?',
+        const='',
+        metavar='CHANNELS',
+        help=f'write the GEMINAL block of a parameters.casl: the channels to correlate ({",".join(sorted(geminal.CHANNELS))} as l:n, '
+        f'e.g. p:2,d:1), or bare for the Hartree-Fock geminal alone',
+    )
+    prepare.add_argument(
+        '-g',
+        '--geminal-set',
+        action='append',
+        metavar='NAME=VALUE',
+        help=f'one geminal setting; repeatable ({", ".join(sorted(geminal.DEFAULTS))}). anchors takes a list: anchors=1,2',
     )
     prepare.set_defaults(func=cmd_prepare)
 

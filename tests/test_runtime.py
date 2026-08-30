@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import EXAMPLES
 
 from casino_mcp import input_file, jobs, runtime, settings
 
@@ -661,6 +662,90 @@ def test_the_jastrow_settings_reach_the_file(orbitals_only, tmp_path):
     written = (tmp_path / 'opt' / 'correlation.data').read_text()
     assert ' Expansion order N_u\n   4\n' in written
     assert '   6.5' in written
+
+
+# --- the geminal -----------------------------------------------------------------------
+
+# A calculation with a real gwfn.data behind it: the levels a channel names are read off the
+# orbital coefficients, and the `orbitals_only` fixture above carries a header and no orbitals.
+GAUSSIAN = EXAMPLES / 'gwfn' / 'Be' / 'MP2-CASSCF(2.4)' / 'cc-pVQZ' / 'CBCS' / 'Jastrow_emin'
+
+
+@pytest.fixture
+def beryllium(tmp_path):
+    """The Be example stripped to what an orbital code leaves, with a geminal input over it."""
+    path = tmp_path / 'be'
+    path.mkdir()
+    shutil.copy2(GAUSSIAN / 'gwfn.data', path / 'gwfn.data')
+    values = {'neu': '2', 'ned': '2', 'atom_basis_type': 'gaussian', 'psi_s': 'geminal', 'use_jastrow': 'F'}
+    (path / 'input').write_text(input_file.build('vmc', values))
+    return path
+
+
+def test_prepare_writes_the_hartree_fock_geminal_with_no_orbital_file_of_its_own(orbitals_only, tmp_path):
+    """No channels, no levels to read: the occupied diagonal is what `neu` and `ned` say it is."""
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'gem'), overrides={'psi_s': 'geminal', 'use_jastrow': 'F'}, geminal=[])
+    assert 'error' not in prepared, prepared
+    written = (tmp_path / 'gem' / 'parameters.casl').read_text()
+    assert 'GEMINAL:' in written and '      g_5,5: [ 1.0, fixed ]' in written
+    assert 'parameters.casl (written)' in prepared['copied']
+    assert prepared['geminal']['geminals'] == 1
+
+
+def test_the_input_is_not_refused_for_the_parameters_casl_that_is_about_to_be_written(orbitals_only, tmp_path):
+    """`psi_s : geminal` with no parameters.casl is a refusal -- unless it comes with one."""
+    values: dict[str, str | None] = {'psi_s': 'geminal', 'use_jastrow': 'F'}
+    assert 'error' in runtime.prepare(str(orbitals_only), str(tmp_path / 'a'), overrides=values)
+    assert 'error' not in runtime.prepare(str(orbitals_only), str(tmp_path / 'b'), overrides=values, geminal=[])
+
+
+def test_prepare_will_not_overwrite_a_geminal_that_already_exists(beryllium, tmp_path):
+    """An optimized parameters.casl is an input, and it would be copied over."""
+    (beryllium / 'parameters.casl').write_text('GEMINAL:\n')
+    prepared = runtime.prepare(str(beryllium), str(tmp_path / 'next'), geminal=[])
+    assert 'already has a parameters.casl' in prepared['error']
+    assert not (tmp_path / 'next').exists()
+
+
+def test_a_geminal_the_input_would_not_read_is_refused(orbitals_only, tmp_path):
+    prepared = runtime.prepare(str(orbitals_only), str(tmp_path / 'gem'), geminal=[])
+    assert any('psi_s : geminal' in problem for problem in prepared['problems'])
+    assert not (tmp_path / 'gem').exists()
+
+
+def test_prepare_correlates_the_levels_the_channels_name(beryllium, tmp_path):
+    prepared = runtime.prepare(str(beryllium), str(tmp_path / 'gem'), geminal=['p:2'], geminal_settings={'anchors': [1]})
+    assert 'error' not in prepared, prepared
+    assert prepared['geminal']['shells'] == [[3, 5, 4], [8, 9, 7]]
+    assert prepared['geminal']['levels']['p'] == 4  # what the file holds, not what was asked for
+    written = (tmp_path / 'gem' / 'parameters.casl').read_text()
+    assert '  Geminal 2:' in written
+    assert '    2^g_4,4=2^g_5,5=2^g_3,3' in written.splitlines()
+
+
+def test_the_geminal_settings_reach_the_file(beryllium, tmp_path):
+    prepared = runtime.prepare(str(beryllium), str(tmp_path / 'gem'), geminal=['p:1'], geminal_settings={'seed': -0.19, 'mirror': 1})
+    assert 'error' not in prepared, prepared
+    written = (tmp_path / 'gem' / 'parameters.casl').read_text()
+    assert '      g_4,4: [ -0.19, optimizable ]' in written
+    assert '  Geminal 3:' in written
+
+
+def test_an_unknown_geminal_setting_is_refused_by_name(beryllium, tmp_path):
+    prepared = runtime.prepare(str(beryllium), str(tmp_path / 'gem'), geminal=[], geminal_settings={'wobble': 1})
+    assert any('no such geminal setting' in problem for problem in prepared['problems'])
+
+
+def test_a_channel_needs_an_orbital_file_this_can_read(beryllium, tmp_path):
+    """A Slater-type or plane-wave calculation can still have the Hartree-Fock geminal."""
+    prepared = runtime.prepare(str(beryllium), str(tmp_path / 'gem'), overrides={'atom_basis_type': 'slater-type'}, geminal=['p:1'])
+    assert any('gwfn.data' in problem for problem in prepared['problems'])
+
+
+def test_a_channel_the_orbital_file_cannot_answer_is_refused(beryllium, tmp_path):
+    prepared = runtime.prepare(str(beryllium), str(tmp_path / 'gem'), geminal=['g:9'])
+    assert any('g:9 was asked for' in problem for problem in prepared['problems'])
+    assert not (tmp_path / 'gem').exists()
 
 
 def test_a_prepared_directory_is_one_casino_run_will_accept(calculation, tmp_path, fake_runqmc, python_path):

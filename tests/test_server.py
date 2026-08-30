@@ -7,10 +7,12 @@ longer reaches the model -- the tool descriptions are the only documentation the
 """
 
 import inspect
+import json
 
 import pytest
 
 from casino_mcp import runtime, server, settings
+from casino_mcp.parse_out import parse_out
 
 TOOLS = {'casino_run', 'casino_status', 'casino_stop', 'casino_list_jobs', 'casino_results', 'casino_prepare'}
 
@@ -74,8 +76,53 @@ def test_each_tool_only_delegates(monkeypatch, tool, function, arguments):
     assert seen
 
 
+def test_prepare_passes_the_wave_function_blocks_through(monkeypatch):
+    """The three files a first calculation may need, each written only when it is asked for."""
+    seen = {}
+    monkeypatch.setattr(runtime, 'prepare', lambda source, dest, **kwargs: seen.update(source=source, dest=dest, **kwargs) or {})
+    server.casino_prepare('/tmp/a', '/tmp/b', geminal=['p:2'], geminal_settings={'mirror': 1})
+    assert seen['geminal'] == ['p:2'] and seen['geminal_settings'] == {'mirror': 1}
+    assert seen['jastrow'] is None and seen['backflow'] is None and seen['jastrow_settings'] is None
+
+
 def test_run_passes_every_argument_through(monkeypatch):
     seen = {}
     monkeypatch.setattr(runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {})
     server.casino_run('/tmp/calc', nproc=4, version='debug', restart=True, unlock=True)
     assert seen == {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True}
+
+
+def test_every_declared_field_says_what_it_is():
+    """An output schema exists to carry the units. A field without a description carries nothing."""
+    for model in (server.Measured, server.Phase, server.JobState, server.JobList, server.Results):
+        for name, field in model.model_fields.items():
+            assert field.description, f'{model.__name__}.{name} declares a type and says nothing'
+
+
+def test_the_units_of_a_vmc_phase_are_written_down():
+    """The four numbers a scan reads, and the four ways a caller could otherwise get them wrong."""
+    phase = server.Phase.model_json_schema()['properties']
+    assert 'per cent' in phase['acceptance']['description']
+    assert 'steps' in phase['correlation_time']['description']
+    assert 'au^-2 s^-1' in phase['efficiency']['description']
+    assert 'variance of the gaussian proposal' in phase['dtvmc']['description']
+
+
+@pytest.mark.parametrize('name', ['vmc_single', 'vmc_opt_emin', 'vmc_opt_varmin', 'vmc_dmc', 'interrupted'])
+def test_a_parsed_run_survives_the_output_model_whole(out_file, name):
+    """Validation must not become a filter: every key the parser produced still reaches the caller."""
+    parsed = parse_out(out_file(name))
+    dumped = server.Results.model_validate(parsed).model_dump(mode='json')
+    assert [key for key in parsed if key not in dumped] == []
+    for phase, validated in zip(parsed['phases'], dumped['phases'], strict=True):
+        assert [key for key in phase if key not in validated] == []
+
+
+async def test_the_schemas_reach_the_wire():
+    tools = {tool.name: tool for tool in await server.server.list_tools()}
+    assert 'au^-2 s^-1' in json.dumps(tools['casino_results'].output_schema)
+    assert set(tools['casino_status'].output_schema['properties']) >= {'job_id', 'status', 'workdir', 'runtime', 'error'}
+    assert tools['casino_list_jobs'].output_schema['properties']['jobs']['anyOf'][0]['items']['$ref'].endswith('JobState')
+    # the two tools that write answer with what they did, which is not a fixed shape
+    assert 'properties' not in tools['casino_run'].output_schema
+    assert 'properties' not in tools['casino_prepare'].output_schema

@@ -8,13 +8,13 @@
 [![casino-mcp MCP server](https://glama.ai/mcp/servers/Konjkov/casino-mcp/badges/card.svg)](https://glama.ai/mcp/servers/Konjkov/casino-mcp)
 
 An MCP control plane over the Fortran [CASINO](https://vallico.net/casinoqmc/) quantum Monte
-Carlo code: write the `input` for the next calculation — and the blank Jastrow factor and
-backflow function for the first one — start it, know what is running, stop it, and read the
+Carlo code: write the `input` for the next calculation — and the blank Jastrow factor, backflow
+function and geminal wave function for the first one — start it, know what is running, stop it, and read the
 result as structured data instead of shipping 4000 lines of text into a model's context,
 including from a DMC run that is still going, which has no energy in `out` at all until its
 last block.
 
-> **Beta (0.4.0).** Everything below is tested against a real CASINO: the recipes against
+> **Beta (0.5.0).** Everything below is tested against a real CASINO: the recipes against
 > `runqmc`'s own input check, and every file the wave function writer produces against a CASINO
 > test run. Interfaces may still move before 1.0.
 
@@ -81,7 +81,7 @@ not ours.
 | `casino_stop(job_id, timeout)` | what was signalled, final status, what `haltqmc` did |
 | `casino_list_jobs(limit)` | every known job, newest first |
 | `casino_results(job_id)` | the physics: phases, energies, error bars, variance, per-block numbers — each with the file and line it was read from |
-| `casino_prepare(source, dest, runtype, overrides, jastrow, backflow, jastrow_settings)` | a new calculation directory with the `input` — and, for a first run, the `correlation.data` — the next run needs |
+| `casino_prepare(source, dest, runtype, overrides, jastrow, backflow, jastrow_settings, geminal, geminal_settings)` | a new calculation directory with the `input` — and, for a first run, the `correlation.data` and `parameters.casl` — the next run needs |
 
 The runtype (`vmc`, `vmc_opt`, `vmc_dmc`, …) comes from the `input` file in `workdir`; there
 is no tool per runtype, because that multiplies the surface without adding a capability.
@@ -119,6 +119,45 @@ own `make_p_stars`.
 A block is written only if the `input` turns its keyword on, and a keyword that is on with no
 block is refused rather than left for CASINO to errstop over — the two halves of the same
 mistake.
+
+### The geminal wave function
+
+`psi_s : geminal` replaces the Slater determinant with a sum of geminal determinants — the
+electrons are *paired* by Φ(r,r′) = Σ g_mk φ_m(r) φ_k(r′) instead of put in orbitals — and
+every parameter of it lives in the `GEMINAL` block of a `parameters.casl`. CASINO ships no
+utility that writes one either, so `casino_prepare(..., geminal=[...])` does:
+
+```python
+casino_prepare('./hf', './gem', geminal=[])                 # the Hartree-Fock geminal alone
+casino_prepare('./hf', './gem', geminal=['p:2', 'd:1'],     # ... and a correlating one over
+               geminal_settings={'anchors': [1]})           #     the first two p and first d levels
+```
+
+* **`geminal=[]` is the Hartree-Fock determinant, exactly.** `g_m,m = 1` over the doubly
+  occupied orbitals and one `u_m,k` per singly occupied one; the manual recommends it as the
+  check to make before correlating anything, and
+  `tests/integration/test_geminal_casl.py` makes it — a VMC run over it has to land on the
+  energy the same system gives with `psi_s : slater`. Being channel-less it reads no orbital
+  file and works for any basis.
+* **A channel is a degenerate level, not an orbital.** `p:2` means the first two p levels of
+  the orbital file, and the whole of each is tied together in `Constraints`, component by
+  component — a correlating geminal built out of one component of a level is not spherically
+  symmetric, and optimizing it breaks the symmetry of the state it describes. The levels are
+  read off the orbital coefficients of `gwfn.data`, so a channel needs a gaussian basis.
+* **A level whose orbitals are not one clean m-component each is demoted, not guessed at.**
+  It gets a diagonal-only tie and a line in `warnings` saying so, because component-wise
+  off-diagonal ties between two levels that are mixed differently constrain orbitals that are
+  not each other's counterparts.
+* **The unpaired columns are not optional.** An open shell needs one `u_m,k` in *every*
+  geminal with a non-zero `c`, since an empty unpaired column makes the geminal matrix
+  singular at every configuration — CASINO's `check_umat` errstops on it — and they are
+  written fixed, because `parse_umat_el` refuses an optimizable one.
+
+`geminal_settings` holds the rest: `seed` and `seed2` (−0.05 and −0.02, the two leading
+correlating diagonals, which start away from zero because a geminal holding only its anchors
+is singular and has no gradient to move it), `anchors` (derived — every occupied orbital no
+correlated level holds — unless given), `mirror` (a third geminal with `c = -1`, tied to the
+second parameter for parameter), and `purity`.
 
 ### Reading a DMC run before it ends
 
@@ -197,6 +236,7 @@ casino-mcp results 20260823-164511-qobn   # the physics of that job, live runs i
 casino-mcp prepare ./vmc ./dmc --runtype vmc_dmc -s dtdmc=0.005   # the next calculation
 casino-mcp prepare ./hf ./opt --runtype vmc_opt --jastrow u,chi,f # ... and the first one
 casino-mcp prepare ./hf ./bf --jastrow --backflow -s backflow=T   # ... with backflow in it
+casino-mcp prepare ./hf ./gem --geminal p:2,d:1 -g anchors=1      # ... as a geminal wave function
 casino-mcp parse ./calc            # the `out` file as JSON
 casino-mcp serve                   # the MCP server on stdio
 ```
@@ -327,10 +367,37 @@ constraints, count what is left free, check that they hold, and stop. That is al
 rule nobody could read off the source was found: an all-electron `phi` set with `N_eN = 1` has
 no free parameters left, whatever `N_ee` is, while a pseudo-atom set at the same order is fine.
 
+## The `parameters.casl` writer
+
+`geminal` is the third writer of the same shape, and the layer under the `geminal` argument
+above:
+
+```python
+from casino_mcp import geminal
+
+orbitals = geminal.read_orbitals('./hf/gwfn.data')          # orbitals, not atoms
+levels = geminal.mo_levels(orbitals)                        # {1: [([3, 5, 4], True), ...], ...}
+shells, diagonal, problems, notes = geminal.select(levels, [(1, 2)])   # the first two p levels
+text = geminal.geminal_section([1, 2], [], [1], shells, diagonal)
+```
+
+CASL is *not* YAML — a constraint line reads `2^g_5,5=2^g_4,4`, which is a bare scalar no YAML
+parser accepts — so the block is generated as plain text. Each MO is classified by the
+(l, m-slot) its coefficients live on, after the solid-harmonic constants CASINO premultiplies
+into d coefficients (and, per `molden2qmc.py`, *not* into f and g ones) are divided back out;
+MOs of the same l are grouped into levels of 2l+1 in file order.
+
+The oracle is again the committed examples plus a `testrun : T` CASINO: the unit suite asserts
+that what this writes for the geminal calculations under `examples/` declares the same
+parameters and imposes the same constraint groups as their hand-written `parameters.casl`, and
+`tests/integration/test_geminal_casl.py` puts the files to CASINO itself, which parses the
+block, resolves the constraint groups, checks them for contradictions and calls `check_umat`
+before it stops.
+
 ## Tests
 
 ```bash
-pytest                      # 278 tests, ~6 s, no CASINO needed
+pytest                      # 337 tests, ~6 s, no CASINO needed
 ```
 
 The unit suite runs anywhere: the parser is checked field by field against five real `out`
@@ -344,9 +411,9 @@ pytest -m integration
 
 The integration suite needs a real CASINO, but nothing outside this repository. It checks
 `parse_out` against CASINO's own `envmc` over every `out` in `examples/`, puts every input
-recipe to `runqmc --check-only` and every blank `correlation.data` to a `testrun : T` CASINO, re-runs the
-whole tree against the installed binary, and drives the server over real stdio MCP, running and
-stopping actual VMC calculations.
+recipe to `runqmc --check-only` and every blank `correlation.data` and `parameters.casl` to a
+`testrun : T` CASINO, re-runs the whole tree against the installed binary, and drives the
+server over real stdio MCP, running and stopping actual VMC calculations.
 
 `examples/` holds eighteen calculations chosen as a cover of the settings CASINO can be run
 with — every runtype, basis type, optimiser and wavefunction option appears at least once, and

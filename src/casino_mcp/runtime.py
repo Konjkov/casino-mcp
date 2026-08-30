@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from casino_mcp import correlation_data, input_file, jobs, parse_out, settings
+from casino_mcp import correlation_data, geminal, input_file, jobs, parse_out, settings
 
 LOCK_NAME = '.runqmc.lock'
 UPDATE_HELPER = 'haltqmc_update_input'  # the program `haltqmc -u` rewrites `input` with
@@ -336,6 +336,81 @@ def blank_correlation(
     return text, description, [], correlation_data.describe(geometry, terms, settings_, pseudo=pseudo, basis=basis, backflow=backflow)
 
 
+def blank_geminal(
+    source: Path,
+    dest: Path,
+    keywords: dict,
+    channels,
+    overrides: dict | None = None,
+) -> tuple[str, dict, list[str], list[str]]:
+    """The `parameters.casl` a `psi_s : geminal` calculation needs: text, what it says, what is
+    wrong with asking for it, and what it does not say out loud.
+
+    The same shape as `blank_correlation` and for the same reason -- CASINO reads this file and
+    no CASINO utility writes one -- but the two differ in what they can leave out. A Jastrow
+    factor starts from zeros; a geminal cannot, because a pairing matrix with an empty diagonal
+    is singular, so this has to know which orbitals the reference determinant fills (`neu` and
+    `ned`, out of the input) and, when a correlating geminal is asked for, which orbitals form
+    a degenerate level (out of the orbital file).
+
+    With no channels there is no orbital file to read: Geminal 1 alone is the Hartree-Fock
+    determinant written as a geminal, it needs nothing but the electron counts, and it is the
+    same for a gaussian, Slater-type or numerical basis.
+    """
+    try:
+        settings_ = geminal.settings_for(overrides)
+    except KeyError as problem:
+        return '', {}, [problem.args[0]], []
+    wanted, errors = geminal.parse_channels(channels)
+
+    orbitals, levels, notes = None, {}, []
+    if wanted:
+        basis = keywords.get('atom_basis_type', '').strip().lower()
+        if basis != geminal.READABLE_BASIS:
+            errors.append(
+                f'the levels a channel names are read off the orbital coefficients, and this reads them out of a '
+                f'{geminal.READABLE_BASIS} gwfn.data; atom_basis_type is {basis or "(unset)"}. Ask for no channels to write the '
+                f'Hartree-Fock geminal, which needs no orbital file.'
+            )
+        else:
+            try:
+                orbitals = geminal.read_orbitals(source / input_file.ORBITAL_FILE[basis])
+            except (OSError, ValueError, UnicodeDecodeError, KeyError) as problem:
+                errors.append(str(problem))
+    if errors:
+        return '', {}, errors, []
+
+    shells, diag_shells = [], []
+    if orbitals is not None:
+        levels = geminal.mo_levels(orbitals, purity=settings_['purity'])
+        shells, diag_shells, problems, notes = geminal.select(levels, wanted)
+        errors.extend(problems)
+        notes.extend(geminal.spin_check(orbitals, settings_['purity'], wanted))
+
+    neu, ned = int(input_file.number(keywords.get('neu')) or 0), int(input_file.number(keywords.get('ned')) or 0)
+    occupied, unpaired, anchors = geminal.occupation(neu, ned, shells, diag_shells, settings_)
+    errors.extend(geminal.check(keywords, wanted, orbitals, occupied, unpaired, anchors, settings_))
+    if errors:
+        return '', {}, errors, []
+
+    text = geminal.casl(
+        geminal.geminal_section(occupied, unpaired, anchors, shells, diag_shells, settings_),
+        provenance=f'{dest.name}: written by casino-mcp, {len(shells) + len(diag_shells)} correlated level(s)',
+    )
+    description = {
+        'channels': [f'{geminal.channel_name(l)}:{count}' for l, count in wanted],
+        'geminals': (2 if shells or diag_shells else 1) + (1 if settings_['mirror'] and (shells or diag_shells) else 0),
+        'occupied': occupied,
+        'unpaired': unpaired,
+        'anchors': anchors,
+        'shells': shells,
+        'diagonal_shells': diag_shells,
+        'levels': {geminal.channel_name(l): len(found) for l, found in sorted(levels.items())},
+        'orbitals': orbitals['norb'] if orbitals else None,
+    }
+    return text, description, [], notes + geminal.describe(keywords, orbitals, occupied, unpaired, anchors, shells, diag_shells, settings_)
+
+
 def check_wanted(keywords: dict, terms, backflow) -> list[str]:
     """Whether the input asks for the blocks being written, and asks for none that are not.
 
@@ -363,6 +438,8 @@ def prepare(
     jastrow: list[str] | None = None,
     backflow: list[str] | None = None,
     jastrow_settings: dict | None = None,
+    geminal: list[str] | None = None,  # NB: shadows the module of that name for the body of this function
+    geminal_settings: dict | None = None,
 ) -> dict[str, Any]:
     """Copy a calculation into a new directory and write the `input` the next run needs.
 
@@ -385,6 +462,13 @@ def prepare(
     for. `jastrow_settings` holds the shape of both: expansion orders, spin dependence, cutoffs,
     the truncation orders.
 
+    `geminal` does the same for the GEMINAL block of a `parameters.casl`, which is what
+    `psi_s : geminal` reads: an empty list writes the Hartree-Fock geminal alone, and a list of
+    channels (`['p:2', 'd:1']`) adds a correlating geminal over the levels they name. It is a
+    list and not a flag because the two are the same file with one geminal or three in it;
+    `None` writes no file at all. `geminal_settings` holds the rest of the decisions -- the
+    seeds, the anchors, the mirror geminal.
+
     Nothing is written unless the result would run: the keywords are checked for the
     combinations CASINO only rejects at run time, and the directory for the files the input
     tells it to read.
@@ -404,6 +488,12 @@ def prepare(
             'error': f'{source_path} already has a correlation.data, and it is an input: it would be copied over. '
             f'A blank one would throw away whatever it holds.',
             'fix': 'prepare from a directory that has no correlation.data, or leave jastrow and backflow unset to keep the one there is',
+        }
+    if geminal is not None and (source_path / 'parameters.casl').is_file():
+        return {
+            'error': f'{source_path} already has a parameters.casl, and it is an input: it would be copied over. '
+            f'A freshly written GEMINAL block would throw away whatever that one holds, optimized parameters included.',
+            'fix': 'prepare from a directory that has no parameters.casl, or leave geminal unset to keep the one there is',
         }
 
     current = input_file.read(source_path / 'input')
@@ -430,11 +520,12 @@ def prepare(
             source_path, dest_path, keywords, jastrow or (), backflow or (), jastrow_settings
         )
 
-    errors = (
-        input_file.check(keywords, blocks)
-        + input_file.check_files(source_path, keywords, writing=('correlation.data',) if (jastrow or backflow) else ())
-        + correlation_errors
-    )
+    casl_text, described_geminal, geminal_errors, geminal_notes = '', {}, [], []
+    if geminal is not None:
+        casl_text, described_geminal, geminal_errors, geminal_notes = blank_geminal(source_path, dest_path, keywords, geminal, geminal_settings)
+
+    writing = (('correlation.data',) if (jastrow or backflow) else ()) + (('parameters.casl',) if geminal is not None else ())
+    errors = input_file.check(keywords, blocks) + input_file.check_files(source_path, keywords, writing=writing) + correlation_errors + geminal_errors
     if errors:
         return {'error': 'the input this would write does not describe a run CASINO can do', 'problems': errors, 'wrote': None}
 
@@ -447,6 +538,9 @@ def prepare(
     if correlation_text:
         (dest_path / 'correlation.data').write_text(correlation_text)
         copied.append('correlation.data (written blank)')
+    if casl_text:
+        (dest_path / 'parameters.casl').write_text(casl_text)
+        copied.append('parameters.casl (written)')
     changed = {name: value for name, value in values.items() if current['keywords'].get(name, object()) != value}
     return {
         'workdir': str(dest_path),
@@ -455,7 +549,8 @@ def prepare(
         'copied': copied,
         'changed': changed,
         'correlation_data': described or None,
-        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords) + correlation_notes,
+        'geminal': described_geminal or None,
+        'warnings': input_file.advise(keywords, blocks) + input_file.advise_files(dest_path, keywords) + correlation_notes + geminal_notes,
     }
 
 

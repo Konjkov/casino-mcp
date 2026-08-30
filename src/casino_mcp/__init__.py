@@ -5,6 +5,7 @@ The layers, innermost first:
     parse_out   a CASINO `out` file, and the `dmc.status` beside it -> structured phases.
     input_file  a CASINO `input` file: read it, edit it, write one for a runtype.
     correlation_data  a blank Jastrow factor for a calculation that has none.
+    geminal     the GEMINAL block of a `parameters.casl`, for a psi_s : geminal calculation.
     settings    where CASINO is and where our state goes: the environment, and defaults.
     jobs        the on-disk job registry under $XDG_STATE_HOME/casino-mcp.
     runtime     prepare / start / status / stop / results, over `runqmc` and `haltqmc`.
@@ -14,6 +15,6 @@ The layers, innermost first:
 The two innermost modules have no MCP in them and no dependencies: a path in, a dict out.
 """
 
-__version__ = '0.4.0'
+__version__ = '0.5.0'
 
 __all__ = ['__version__']

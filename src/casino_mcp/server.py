@@ -8,9 +8,10 @@ Never write to stdout from this process: stdout is the JSON-RPC stream, and prin
 is the single most common way to break a stdio MCP server. Diagnostics go to stderr.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import BaseModel, ConfigDict, Field
 
 from casino_mcp import __version__, runtime, settings
 
@@ -21,6 +22,118 @@ server = MCPServer(
     instructions='Run and monitor Fortran CASINO calculations. One directory is one calculation.',
     version=__version__,
 )
+
+
+# The return models below are the other half of the documentation: a tool docstring says what a
+# call does, an output schema says what the numbers coming back are, and a number whose units are
+# not written down anywhere is a number a caller has to guess at. They are pydantic models rather
+# than TypedDicts because the SDK builds a TypedDict's model through `get_type_hints` without
+# `include_extras`, which drops every `Field(description=...)` on the way -- the one thing worth
+# having here. Every field is optional and every model allows extras: the runtime answers with
+# what it knows, an unknown job answers with `error` alone, and a key that is not declared here
+# still reaches the caller instead of being validated away.
+#
+# The tools go on returning the runtime's plain dicts, which the SDK validates against these
+# models on the way out. Returning a model instead would serialise every unset field as a null
+# into the text half of the reply, which is the half a model reads -- hence the ignores below.
+
+
+class Measured(BaseModel):
+    """One number as CASINO printed it, with where it was read from."""
+
+    model_config = ConfigDict(extra='allow')
+
+    value: float | str | None = Field(None, description='the number itself, or null when CASINO did not print it, and then `reason` says why')
+    error: float | None = Field(None, description='the standard error CASINO printed with it, in the units of `value`')
+    line: int | None = Field(None, description='1-based line of the file the value was read from')
+    reason: str | None = Field(None, description='why there is no value')
+    derived: str | None = Field(None, description='set when the value was computed here rather than printed, naming what it was computed from')
+
+
+class Phase(BaseModel):
+    """One phase of a run. The fields a phase does not have are absent, not zero.
+
+    Units are CASINO's own, as its `out` labels them: an acceptance ratio in per cent and not a
+    fraction, a correlation time in steps of this run and not in moves, an efficiency in inverse
+    variance per second of CPU time, which is comparable between runs only at equal process count.
+    """
+
+    model_config = ConfigDict(extra='allow')
+
+    kind: Literal['vmc', 'opt', 'dmc_equil', 'dmc_stats'] | None = Field(None, description='what CASINO was doing in this phase')
+    label: str | None = Field(None, description='the banner line of the phase in `out`')
+    index: int | None = Field(None, description='the phase number CASINO gave it, counting from 1 within its kind')
+    line: int | None = Field(None, description='1-based line of `out` the phase starts at')
+    energy: Measured | None = Field(None, description='the total energy of this phase, au per simulation cell, with its standard error')
+    variance: Measured | None = Field(None, description='the sample variance of the local energy, au^2')
+    nblock: int | None = Field(None, description='number of blocks in the phase')
+    blocks: list[dict[str, Any]] | None = Field(None, description='the same quantities block by block, each with its own `time` in seconds')
+    acceptance: Measured | None = Field(None, description='mean acceptance ratio over the blocks, per cent')
+    correlation_time: Measured | None = Field(None, description='mean correlation time over the blocks, in VMC steps')
+    efficiency: Measured | None = Field(None, description='mean efficiency over the blocks, au^-2 s^-1: 1 / (variance of the mean * CPU seconds)')
+    steps_per_process: Measured | None = Field(None, description='VMC steps one process took, which is vmc_nstep divided over the processes')
+    dtvmc: Measured | None = Field(None, description='the VMC time step, au: the variance of the gaussian proposal, not its width')
+
+
+class JobState(BaseModel):
+    """One job as the control plane sees it, which is what runqmc and /proc say and nothing about the physics."""
+
+    model_config = ConfigDict(extra='allow')
+
+    job_id: str | None = Field(None, description='the id every other tool takes')
+    status: Literal['running', 'finished', 'failed', 'stopped', 'unknown'] | None = Field(
+        None,
+        description=(
+            "'finished' means runqmc exited 0, not that the physics is any good; 'failed' that it did not; 'stopped' that casino_stop halted it; "
+            "'unknown' that the launcher vanished without recording an exit code"
+        ),
+    )
+    workdir: str | None = Field(None, description='the calculation directory: one directory is one calculation')
+    command: list[str] | None = Field(None, description='the runqmc command line as it was launched')
+    nproc: int | None = Field(None, description='MPI processes the job was given')
+    pid: int | None = Field(None, description='pid of the launcher, not of the casino processes under it')
+    binary: str | None = Field(None, description='the CASINO binary runqmc chose')
+    started: str | None = Field(None, description='local time the job was launched')
+    finished: str | None = Field(None, description='local time the launcher exited')
+    stopped: str | None = Field(None, description='local time casino_stop signalled it')
+    runtime: float | None = Field(None, description='seconds of wall clock since the job started, or its whole life once it ended; not CPU time')
+    exit_code: int | None = Field(None, description="runqmc's exit code")
+    runqmc_log: str | None = Field(None, description="the launcher's own log, where a failure that never reached CASINO is explained")
+    note: str | None = Field(None, description='something about this answer the caller would otherwise have to infer')
+    error: str | None = Field(None, description='set instead of everything else when the call could not be answered')
+
+
+class JobList(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+    jobs: list[JobState] | None = Field(None, description='every known job, newest first')
+
+
+class Results(JobState):
+    """A job's state and the physics in its files. Only this level is typed; a phase's blocks stay free-form."""
+
+    path: str | None = Field(None, description='the `out` these numbers were read from')
+    runtype: str | None = Field(None, description='RUNTYPE as the input set it: vmc, vmc_opt, vmc_dmc, ...')
+    # CASINO's own `Started` line wins over the launch time, and it is a measured value, not a string
+    started: Measured | str | None = Field(  # type: ignore[assignment]
+        None, description='local time CASINO started, from `out`, falling back to the time the job was launched'
+    )
+    complete: bool | None = Field(None, description='true once CASINO wrote its timing report, the only sign that the run reached its own end')
+    cpu_time: Measured | None = Field(None, description='Total CASINO CPU time, seconds, summed over the MPI processes')
+    real_time: Measured | None = Field(None, description='Total CASINO real time, seconds of wall clock; twice the CPU time means shared cores')
+    ended: Measured | None = Field(None, description='local time CASINO stopped, as it printed it')
+    phases: list[Phase] | None = Field(None, description='the run as the sequence of phases it is')
+    dmc_status: dict[str, Any] | None = Field(
+        None, description='the estimate a running DMC job has reached, from `dmc.status`, which only an orderly end deletes'
+    )
+    result: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "the number that is this run's answer: {phase, kind, energy, variance}, or {source, kind, energy, variance} from `dmc.status`, "
+            'or {value: null, reason} when this run has no answer yet'
+        ),
+    )
+    messages: list[dict[str, Any]] | None = Field(None, description='the warnings and errors CASINO printed, each {line, text}')
 
 
 @server.tool()
@@ -71,6 +184,8 @@ def casino_prepare(
     jastrow: list[str] | None = None,
     backflow: list[str] | None = None,
     jastrow_settings: dict[str, float] | None = None,
+    geminal: list[str] | None = None,
+    geminal_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Copy a calculation into a new directory and write the `input` for the next run in it.
 
@@ -111,6 +226,27 @@ def casino_prepare(
         bare nucleus and 0 behind a pseudopotential, because CASINO believes the flag without
         checking it. No AE CUTOFFS section is written -- it is optional, and CASINO chooses the
         lengths itself.
+    geminal: the GEMINAL block of a `parameters.casl`, which is what `psi_s : geminal` reads --
+        a geminal wave function pairs the electrons instead of putting them in a determinant,
+        and CASINO ships no utility that writes the file. An empty list writes the
+        Hartree-Fock geminal alone: g_m,m = 1 over the occupied orbitals and one fixed
+        unpaired column per singly occupied one, which is the Slater determinant exactly and
+        the check to make before correlating anything. A list of channels -- ['p:2', 'd:1'],
+        meaning the first two p levels and the first d level of the orbital file -- adds a
+        second geminal that correlates them, with the whole of each degenerate level tied
+        together component by component in the Constraints block, because a correlating
+        geminal built out of one component of a level is not spherically symmetric. Leave it
+        unset when the source already has a parameters.casl; asking for both is refused. The
+        channels are read off the orbital coefficients of a gaussian gwfn.data, so they need
+        one; the Hartree-Fock geminal needs no orbital file and works for any basis.
+    geminal_settings: seed (-0.05) and seed2 (-0.02), the first two correlating diagonals,
+        which start away from zero because a geminal holding only its anchors is singular and
+        has no gradient to move it (the Be 2s-2p near-degeneracy wants -0.19); mirror (0, set
+        it to 1 for a third geminal with c = -1 tied to the second parameter for parameter);
+        anchors (derived: every occupied orbital no correlated level contains -- pass [1] for
+        Be, whose 2s pair the p block replaces rather than sits beside); purity (0.98, the
+        share of an orbital's weight that must sit on one m-component before its level counts
+        as rotationally closed and can be tied off-diagonally).
     jastrow_settings: the shape of both blocks, where the defaults are not wanted. Jastrow:
         trunc_order (3), n_u (8), n_chi (8), n_f_en (3), n_f_ee (3), spin_dep_u (1),
         spin_dep_chi (0), spin_dep_f (1), cusp_chi (0), cutoff_u / cutoff_chi / cutoff_f (0,
@@ -128,17 +264,27 @@ def casino_prepare(
     placeholder default, `dmc_stats_nstep` not divisible by its block count, keywords left over
     from the runtype this was copied from -- comes back in `warnings` and does not stop it.
     """
-    return runtime.prepare(source, dest, runtype=runtype, overrides=overrides, jastrow=jastrow, backflow=backflow, jastrow_settings=jastrow_settings)
+    return runtime.prepare(
+        source,
+        dest,
+        runtype=runtype,
+        overrides=overrides,
+        jastrow=jastrow,
+        backflow=backflow,
+        jastrow_settings=jastrow_settings,
+        geminal=geminal,
+        geminal_settings=geminal_settings,
+    )
 
 
 @server.tool()
-def casino_status(job_id: str) -> dict[str, Any]:
+def casino_status(job_id: str) -> JobState:
     """State of one job: running / finished / failed / stopped, pid, runtime in seconds, exit code."""
-    return runtime.status(job_id)
+    return runtime.status(job_id)  # type: ignore[return-value]
 
 
 @server.tool()
-def casino_results(job_id: str) -> dict[str, Any]:
+def casino_results(job_id: str) -> Results:
     """Physics out of a job's files: energies, error bars, variance, per-block numbers.
 
     Reads `out` and returns it as phases, because a CASINO run is a sequence of them and not
@@ -160,13 +306,13 @@ def casino_results(job_id: str) -> dict[str, Any]:
     While the run is still equilibrating there is no DMC energy anywhere yet, and `result` then
     says so rather than answering with an earlier phase.
     """
-    return runtime.results(job_id)
+    return runtime.results(job_id)  # type: ignore[return-value]
 
 
 @server.tool()
-def casino_list_jobs(limit: int = 20) -> dict[str, Any]:
+def casino_list_jobs(limit: int = 20) -> JobList:
     """Every known job, newest first, with its current state."""
-    return runtime.listing(limit)
+    return runtime.listing(limit)  # type: ignore[return-value]
 
 
 @server.tool()

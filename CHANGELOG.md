@@ -4,6 +4,66 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
+## [0.5.0] — 2026-08-30
+
+A geminal wave function can be written now, which is the third file at the start of a chain
+that no CASINO utility writes — and the tools that read a calculation say what the numbers
+they hand back are, units and all, instead of answering with an untyped object.
+
+### Added
+
+- **The `GEMINAL` block of a `parameters.casl`**, which is the third file at the start of a
+  chain that nothing else writes. `psi_s : geminal` replaces the Slater determinant with a sum
+  of geminal determinants — the electrons are *paired* by `Phi(r,r') = sum_mk g_mk phi_m(r)
+  phi_k(r')` rather than put in orbitals — and every `c` and `g` of it lives in that one block.
+  `casino_prepare(source, dest, geminal=[])` writes the Hartree-Fock geminal, which is the
+  Slater determinant exactly and the check the manual recommends making first;
+  `geminal=['p:2', 'd:1']` adds a correlating geminal over the first two p levels and the first
+  d level of the orbital file. `geminal_settings` holds the seeds, the anchors, the mirror
+  geminal and the purity.
+- The channels are *levels*, not orbitals, and that is the whole difficulty: a correlating
+  geminal built out of one component of a degenerate level is not spherically symmetric, and
+  optimizing it breaks the symmetry of the state it is meant to describe. So each level is tied
+  together in `Constraints`, component by component and both ways round the diagonal. The levels
+  are read off the orbital coefficients of `gwfn.data` — each MO classified by the (l, m-slot)
+  carrying its weight, after the solid-harmonic constants CASINO premultiplies into d
+  coefficients and (per `molden2qmc.py`) not into f and g ones are divided back out — and a
+  level whose orbitals are not one clean component each is demoted to a diagonal-only tie with
+  a warning rather than guessed at.
+- The unpaired columns of an open shell go into *every* geminal with a non-zero `c`, not only
+  the first: an empty unpaired column makes the geminal matrix singular at every configuration,
+  which is `check_umat`'s errstop, and they are written fixed because `parse_umat_el` refuses an
+  optimizable one. The occupation itself comes from `neu` and `ned` in the `input`, the only
+  place that says which orbitals this calculation fills.
+- Unlike a Jastrow factor, a geminal cannot start from zeros — a pairing matrix with an empty
+  diagonal is singular — so the two leading correlating channels start at `seed` and `seed2`
+  (−0.05 and −0.02, the values the committed examples start their cycles from).
+- `casino-mcp prepare --geminal p:2,d:1 -g anchors=1 -g mirror=1`, the same for a shell.
+- `tests/integration/test_geminal_casl.py`: every generated file put to the same `testrun : T`
+  CASINO, which parses the block, resolves the constraint groups, checks them for contradictions
+  and calls `check_umat`. Its last test is the one no unit test can make — a VMC run over the
+  Hartree-Fock geminal against one over `psi_s : slater`, which is the only check that the
+  orbital indices written mean what they are meant to.
+
+### Changed
+
+- **`casino_status`, `casino_results` and `casino_list_jobs` now declare what comes back.**
+  Their return annotation was `dict[str, Any]`, out of which the SDK builds an output schema
+  saying "an object" and nothing further — so a caller holding `acceptance : 50.1797` had
+  nothing to tell it whether that is a per cent or a fraction, `correlation_time` steps or
+  moves, `efficiency` per second of CPU time or per move. The three return models now, each
+  field carrying its units and its meaning, and the schema travels with the tool listing. They
+  are pydantic models rather than TypedDicts because the SDK builds a TypedDict's model through
+  `get_type_hints` without `include_extras`, which drops every description on the way. Every
+  field stays optional and every model allows extras: the runtime answers with the same plain
+  dicts, an unknown job still answers with `error` alone, and a key that is not declared still
+  reaches the caller. On the wire a validated reply now carries the fields it has no answer for
+  as nulls instead of omitting them. `casino_run` and `casino_prepare` keep the free-form
+  schema: what they answer is an account of what they did, which is not a fixed shape.
+- `input_file.check_files` counts a fresh `parameters.casl` among the files the caller is about
+  to write, as it already did a blank `correlation.data`: the file is prepared alongside the
+  `input` it goes with, and refusing the input because it is not there yet would refuse the pair.
+
 ## [0.4.0] — 2026-08-28
 
 The server can now read a calculation and write one, at both ends of a chain. Reading: a DMC
