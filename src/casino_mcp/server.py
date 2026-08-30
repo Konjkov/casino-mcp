@@ -90,6 +90,115 @@ class BinaryStamp(BaseModel):
     mtime: str | None = Field(None, description='local time it was last built')
 
 
+class Started(BaseModel):
+    """A run as it was launched. Not a state: this job is running by construction, and casino_status is what says whether it still is."""
+
+    model_config = ConfigDict(extra='allow')
+
+    job_id: str | None = Field(None, description='the id every other tool takes')
+    workdir: str | None = Field(None, description='the calculation directory the run was started in')
+    command: list[str] | None = Field(None, description='the runqmc command line as it was launched, argument by argument')
+    pid: int | None = Field(
+        None, description='pid of the launcher, not of the casino processes under it; it leads its own session, which is how a stop finds the ranks'
+    )
+    started: str | None = Field(None, description='local time the job was launched')
+    binary: BinaryStamp | None = Field(None, description='the build of the CASINO binary this job runs: path, size and mtime as they were at launch')
+    removed: list[str] | None = Field(
+        None, description='what `restart` deleted before starting, named so that a restart that ate more than was expected is visible here'
+    )
+    resume: Literal['continue', 'halted'] | None = Field(
+        None,
+        description=(
+            "which of CASINO's two continuation routes this run took: 'continue' for `runqmc --continue` over a run CASINO stopped on a time "
+            "limit, 'halted' for a plain runqmc over the `input` haltqmc rewrote. Absent unless resume was asked for"
+        ),
+    )
+    note: str | None = Field(None, description='something about this answer the caller would otherwise have to infer')
+    error: str | None = Field(None, description='set instead of everything else when nothing was started, and then nothing was touched either')
+
+
+class CorrelationData(BaseModel):
+    """The blank `correlation.data` that was written, and what it was read off the orbital file."""
+
+    model_config = ConfigDict(extra='allow')
+
+    terms: list[str] | None = Field(None, description='the Jastrow terms written: u, chi, f')
+    backflow: list[str] | None = Field(None, description='the backflow terms written: eta, mu, phi; empty when no backflow was asked for')
+    atoms: int | None = Field(None, description='atoms found in the orbital file')
+    sets: list[dict[str, Any]] | None = Field(
+        None,
+        description=(
+            'the atoms grouped into sets by species, each {atomic_number, atoms}, where `atoms` are the 1-based labels the orbital file gives them. '
+            'One chi and one f term is written per set'
+        ),
+    )
+    pseudo: list[int] | None = Field(
+        None,
+        description=(
+            'the atomic numbers a pseudopotential file was found for, which is what sets each cusp type: 1 for a bare nucleus, 0 behind a '
+            'pseudopotential. CASINO believes the flag without checking it'
+        ),
+    )
+
+
+class GeminalPlan(BaseModel):
+    """The GEMINAL block written into `parameters.casl`, and the orbital levels it was built over."""
+
+    model_config = ConfigDict(extra='allow')
+
+    channels: list[str] | None = Field(None, description="the levels asked for, as written: 'p:2' means the first two p levels of the orbital file")
+    geminals: int | None = Field(
+        None, description='geminals in the block: 1 for the Hartree-Fock geminal alone, 2 with a correlating one, 3 when a mirror was asked for'
+    )
+    occupied: list[int] | None = Field(None, description='the doubly occupied orbitals, 1-based, which is where the Hartree-Fock diagonal runs')
+    unpaired: list[int] | None = Field(None, description='the singly occupied orbitals, one fixed unpaired column each')
+    anchors: list[int] | None = Field(
+        None,
+        description=(
+            'the occupied orbitals no correlated level covers, kept on the diagonal of the correlating geminal so that it is not singular. '
+            'Derived unless `geminal_settings.anchors` named them'
+        ),
+    )
+    shells: list[list[int]] | None = Field(
+        None, description='each rotationally closed level as its orbital indices, tied together component by component in the Constraints block'
+    )
+    diagonal_shells: list[list[int]] | None = Field(
+        None, description='the levels that are not one clean m-component per orbital, tied on the diagonal only'
+    )
+    levels: dict[str, int] | None = Field(
+        None, description='how many levels of each channel the orbital file actually holds -- what is there, not what was asked for'
+    )
+    orbitals: int | None = Field(None, description='orbitals in the file the levels were read from, null when none was read')
+
+
+class Prepared(BaseModel):
+    """A new calculation directory, and everything that went into it. Nothing is written unless the result would run."""
+
+    model_config = ConfigDict(extra='allow')
+
+    workdir: str | None = Field(None, description='the directory that was written: what casino_run is given next')
+    source: str | None = Field(None, description='the calculation it was copied from, which was not touched')
+    runtype: str | None = Field(None, description='RUNTYPE as the new `input` sets it')
+    copied: list[str] | None = Field(
+        None,
+        description=(
+            'the files put in the new directory, a written or renamed one saying so: '
+            '`correlation.data (written blank)`, `parameters.casl (written)`, `config.out -> config.in`'
+        ),
+    )
+    changed: dict[str, str | None] | None = Field(
+        None, description='the keywords this call actually changed, as {name: value}; one already at the value asked for is not in here'
+    )
+    correlation_data: CorrelationData | None = Field(None, description='the blank correlation.data, when one was asked for')
+    geminal: GeminalPlan | None = Field(None, description='the GEMINAL block, when one was asked for')
+    warnings: list[str] | None = Field(
+        None, description='what is legal but probably unintended: a placeholder timestep, a block count that does not divide, keywords left over'
+    )
+    problems: list[str] | None = Field(None, description='with `error`: the reasons the input this would write is one CASINO would not run')
+    fix: str | None = Field(None, description='with `error`: what to do about it')
+    error: str | None = Field(None, description='set instead of everything else when nothing was written, and then no directory was created')
+
+
 class JobState(BaseModel):
     """One job as the control plane sees it, which is what runqmc and /proc say and nothing about the physics."""
 
@@ -125,6 +234,57 @@ class Waited(JobState):
     timed_out: bool | None = Field(None, description='true when the timeout ran out first and the job is still running')
 
 
+class Terminated(BaseModel):
+    """What was signalled, which is not always the `casino` ranks."""
+
+    model_config = ConfigDict(extra='allow')
+
+    scope: Literal['casino', 'process group'] | None = Field(
+        None,
+        description=(
+            "'casino' means the ranks themselves got SIGTERM and runqmc stayed alive to finish writing `out`, which is the orderly stop; "
+            "'process group' means there was nothing named casino in the session -- the run was still in runqmc's setup, or already over"
+        ),
+    )
+    pids: list[int] | None = Field(None, description='the pids signalled: the casino ranks, or the launcher whose group was signalled instead')
+
+
+class Halt(BaseModel):
+    """What CASINO's own `haltqmc -f -u` made of the directory afterwards.
+
+    This is what decides whether the calculation can be continued: `-u` rewrites `input` for the
+    work that is left, and without it the directory can only be restarted from the beginning.
+    """
+
+    model_config = ConfigDict(extra='allow')
+
+    command: list[str] | None = Field(None, description='the haltqmc command line as it ran, argument by argument')
+    exit_code: int | None = Field(None, description="haltqmc's exit code")
+    updated_input: bool | None = Field(
+        None, description='true when `input` was rewritten for the work that is left, which is what casino_run(resume=true) then continues'
+    )
+    input_saved: str | None = Field(
+        None,
+        description=(
+            'where the `input` as it was before haltqmc rewrote it was copied, under the job directory and never in the calculation directory. '
+            'Null when there was nothing to save'
+        ),
+    )
+    output: str | None = Field(None, description='the last lines haltqmc printed')
+    lock_cleared: bool | None = Field(None, description='true when a .runqmc.lock was left behind and removed here; haltqmc removes its own')
+    note: str | None = Field(None, description='something about this answer the caller would otherwise have to infer')
+    error: str | None = Field(
+        None, description='set when haltqmc did not run or exited nonzero: the job is stopped either way, but the directory may not be tidy'
+    )
+
+
+class Stopped(JobState):
+    """The state the job ended in, and what stopping it did."""
+
+    terminated: Terminated | None = Field(None, description='what was signalled to end the run')
+    halt: Halt | None = Field(None, description='what haltqmc then did with the directory')
+
+
 class Input(BaseModel):
     """A calculation's `input` as data: what the run was told to do."""
 
@@ -145,6 +305,8 @@ class Input(BaseModel):
 
 
 class JobList(BaseModel):
+    """The registry: every job this server has started, whatever became of it."""
+
     model_config = ConfigDict(extra='allow')
 
     jobs: list[JobState] | None = Field(None, description='every known job, newest first')
@@ -188,7 +350,7 @@ def casino_run(
     restart: bool = False,
     resume: bool = False,
     unlock: bool = False,
-) -> dict[str, Any]:
+) -> Started:
     """Start a CASINO calculation in workdir and return immediately.
 
     The runtype (vmc, vmc_opt, vmc_dmc, ...) comes from the `input` file in workdir;
@@ -216,7 +378,7 @@ def casino_run(
         reached its own end is refused -- there is nothing to continue.
     unlock: clear a stale .runqmc.lock left by a runqmc instance that died.
     """
-    return runtime.start(workdir, nproc=nproc, version=version, restart=restart, resume=resume, unlock=unlock)
+    return runtime.start(workdir, nproc=nproc, version=version, restart=restart, resume=resume, unlock=unlock)  # type: ignore[return-value]
 
 
 @server.tool()
@@ -230,7 +392,7 @@ def casino_prepare(
     jastrow_settings: dict[str, float] | None = None,
     geminal: list[str] | None = None,
     geminal_settings: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> Prepared:
     """Copy a calculation into a new directory and write the `input` for the next run in it.
 
     This is how a calculation becomes the next one: optimise a wave function, then prepare a
@@ -318,7 +480,7 @@ def casino_prepare(
         jastrow_settings=jastrow_settings,
         geminal=geminal,
         geminal_settings=geminal_settings,
-    )
+    )  # type: ignore[return-value]
 
 
 @server.tool()
@@ -440,7 +602,7 @@ def casino_list_jobs(limit: int = 20, workdir: str = '') -> JobList:
 
 
 @server.tool()
-def casino_stop(job_id: str, timeout: float = settings.STOP_TIMEOUT) -> dict[str, Any]:
+def casino_stop(job_id: str, timeout: float = settings.STOP_TIMEOUT) -> Stopped:
     """Stop a running calculation and leave its directory ready to be continued.
 
     SIGTERM goes to this job's `casino` processes, as `haltqmc -k` does for the whole
@@ -453,7 +615,7 @@ def casino_stop(job_id: str, timeout: float = settings.STOP_TIMEOUT) -> dict[str
     job_id: the id casino_run returned, or the calculation directory.
     timeout: seconds the job gets to end on its own before the process group is killed.
     """
-    return runtime.stop(job_id, timeout=timeout)
+    return runtime.stop(job_id, timeout=timeout)  # type: ignore[return-value]
 
 
 def main() -> None:

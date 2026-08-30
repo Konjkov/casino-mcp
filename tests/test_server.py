@@ -8,8 +8,11 @@ longer reaches the model -- the tool descriptions are the only documentation the
 
 import inspect
 import json
+from typing import get_args, get_type_hints
 
 import pytest
+from conftest import wait_for
+from pydantic import BaseModel
 
 from casino_mcp import jobs, runtime, server, settings
 from casino_mcp.parse_out import parse_out
@@ -121,11 +124,112 @@ def test_the_binary_stamp_survives_the_output_model(tmp_path, monkeypatch):
         assert state.model_dump(exclude_none=True)['binary'] == stamp
 
 
+def output_models():
+    """Every model in the module, because a list of them is a list to forget to add to."""
+    return {value for value in vars(server).values() if isinstance(value, type) and issubclass(value, BaseModel) and value is not BaseModel}
+
+
+def models_in(annotation):
+    """The models a declared type reaches through, past the `| None`, the lists and the dicts."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        yield annotation
+    for argument in get_args(annotation):
+        yield from models_in(argument)
+
+
 def test_every_declared_field_says_what_it_is():
-    """An output schema exists to carry the units. A field without a description carries nothing."""
-    for model in (server.Measured, server.Phase, server.JobState, server.JobList, server.Results):
+    """An output schema exists to carry the units. A field without a description carries nothing.
+
+    Held over the module and not over a list of models: the list this replaces named five of
+    the fifteen, so nothing in it covered the models added after it was written.
+    """
+    models = output_models()
+    assert len(models) >= len(TOOLS), 'every tool answers with one, so there are at least that many'
+    for model in models:
+        assert model.__doc__, f'{model.__name__} is part of the schema and says nothing about itself'
         for name, field in model.model_fields.items():
             assert field.description, f'{model.__name__}.{name} declares a type and says nothing'
+
+
+def test_every_tool_answers_with_a_declared_model():
+    """`-> dict[str, Any]` is what put `{"type": "object", "additionalProperties": true}` on the
+    wire for three of the eight tools: a reply with no field names, no units, and nothing any
+    test could compare against what the runtime returns. That is where `binary` hid for five
+    releases, so the annotation is the thing to hold, not the three tools that had it."""
+    for name in sorted(TOOLS):
+        returns = get_type_hints(getattr(server, name)).get('return')
+        assert isinstance(returns, type) and issubclass(returns, BaseModel), f'{name} answers with {returns}, which describes nothing'
+
+
+def test_every_model_is_one_a_caller_reaches():
+    """The other half of holding the module rather than a list: what the enumeration above
+    guarantees is worth having only if everything it finds is really an output schema."""
+    reached = set()
+    queue = [model for name in TOOLS for model in models_in(get_type_hints(getattr(server, name))['return'])]
+    while queue:
+        model = queue.pop()
+        if model in reached:
+            continue
+        reached.add(model)
+        for field in model.model_fields.values():
+            queue.extend(models_in(field.annotation))
+    declared = output_models()
+    assert not declared - reached, f'no tool reaches {sorted(model.__name__ for model in declared - reached)}'
+    assert not reached - declared, f'{sorted(model.__name__ for model in reached - declared)} is answered with but not declared here'
+
+
+def carries(dumped, written):
+    """Everything the runtime wrote is still there, unchanged. Validation may add nulls of its
+    own -- an unset field is dumped as one -- and that is the one difference allowed."""
+    if isinstance(written, dict):
+        return all(name in dumped and carries(dumped[name], value) for name, value in written.items())
+    if isinstance(written, list):
+        return len(dumped) == len(written) and all(carries(*pair) for pair in zip(dumped, written, strict=True))
+    return dumped == written
+
+
+def survives(model, reply):
+    """A real call's answer through the model that declares it.
+
+    A declared field is a claim about what the runtime returns, and `binary` claimed `str`
+    against a dict for five releases: nothing failed until a real job reached a real model.
+    So the reply here is one the runtime actually produced, never a hand-written stand-in.
+    """
+    dumped = model.model_validate(reply).model_dump(mode='json')
+    assert carries(dumped, reply), f'{model.__name__} did not carry {reply} through: {dumped}'
+
+
+def test_a_launched_run_survives_its_output_model(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    started = runtime.start(str(workdir))
+    survives(server.Started, started)
+    assert started['command'] == runtime.status(started['job_id'])['command'], 'one key, one meaning: the argv, not a joined string'
+
+
+def test_a_prepared_directory_survives_its_output_model(orbitals_only, tmp_path):
+    """Both branches, and both nested models: a written correlation.data and a written GEMINAL block."""
+    survives(
+        server.Prepared,
+        runtime.prepare(
+            str(orbitals_only), str(tmp_path / 'bf'), overrides={'backflow': 'T'}, jastrow=['u', 'chi', 'f'], backflow=['eta', 'mu', 'phi']
+        ),
+    )
+    survives(
+        server.Prepared,
+        runtime.prepare(str(orbitals_only), str(tmp_path / 'gem'), overrides={'psi_s': 'geminal', 'use_jastrow': 'F'}, geminal=[]),
+    )
+    survives(server.Prepared, runtime.prepare(str(orbitals_only), str(tmp_path / 'nowhere'), runtype='dmc_dmc'))
+
+
+def test_a_stopped_job_survives_its_output_model(workdir, fake_runqmc, fake_haltqmc, python_path):
+    """The one with two nested reports in it: what was signalled, and what haltqmc then did."""
+    fake_runqmc(sleep=300)
+    fake_haltqmc()
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+    stopped = runtime.stop(started['job_id'], timeout=10.0)
+    survives(server.Stopped, stopped)
+    assert stopped['halt']['command'][0].endswith('haltqmc')
 
 
 def test_the_units_of_a_vmc_phase_are_written_down():
@@ -152,9 +256,11 @@ async def test_the_schemas_reach_the_wire():
     assert 'au^-2 s^-1' in json.dumps(tools['casino_results'].output_schema)
     assert set(tools['casino_status'].output_schema['properties']) >= {'job_id', 'status', 'workdir', 'runtime', 'error'}
     assert tools['casino_list_jobs'].output_schema['properties']['jobs']['anyOf'][0]['items']['$ref'].endswith('JobState')
-    # the two tools that write answer with what they did, which is not a fixed shape
-    assert 'properties' not in tools['casino_run'].output_schema
-    assert 'properties' not in tools['casino_prepare'].output_schema
+    # the three that act rather than read carried `{"type": "object"}` and nothing else, which
+    # is the hole `binary` lived in: a reply nothing describes is a reply nothing can check.
+    assert set(tools['casino_run'].output_schema['properties']) >= {'job_id', 'command', 'binary', 'removed', 'resume'}
+    assert set(tools['casino_prepare'].output_schema['properties']) >= {'workdir', 'copied', 'changed', 'warnings'}
+    assert set(tools['casino_stop'].output_schema['properties']) >= {'status', 'terminated', 'halt'}
 
 
 def test_the_results_docstring_names_what_the_parser_returns():

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import EXAMPLES
+from conftest import EXAMPLES, wait_for
 
 from casino_mcp import input_file, jobs, runtime, settings
 
@@ -22,16 +22,6 @@ STARTED = ' Started 2026/08/25 13:48:02.391\n\n Running in parallel using 4 MPI 
 COMPLETED = STARTED + ' Total CASINO CPU time  : : :       21.3400 s\n Ends 2026/08/25 13:48:23.731\n'
 INTERRUPTED = STARTED + ' VMC #  1\n Acceptance ratio         (%)  =  50.9\n'
 TIME_LIMITED = STARTED + ' CONTINUATION INFO:\n  Suggested action: continue run directly\n  Set NEWRUN : F\n'
-
-
-def wait_for(predicate, timeout=30.0, interval=0.1):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        value = predicate()
-        if value:
-            return value
-        time.sleep(interval)
-    raise AssertionError(f'timed out after {timeout}s')
 
 
 # --- finding runqmc ------------------------------------------------------------------
@@ -153,7 +143,7 @@ def test_resume_starts_on_an_existing_out_and_keeps_it(workdir, fake_runqmc, pyt
     (workdir / 'config.in').write_text('configurations\n')
 
     started = runtime.start(str(workdir), resume=True)
-    assert started['command'].endswith('--continue')
+    assert started['command'][-1] == '--continue'
     assert started['resume'] == 'continue'
     assert started['removed'] == []
     assert (workdir / 'config.in').is_file()  # the very thing being continued from
@@ -249,7 +239,7 @@ def test_unlock_unlocks_a_stale_lock(workdir, fake_runqmc, python_path):
     (workdir / '.runqmc.lock').touch()
     started = runtime.start(str(workdir), unlock=True)
     assert 'job_id' in started
-    assert started['command'].endswith('--unlock')  # runqmc clears its own lock, we do not
+    assert started['command'][-1] == '--unlock'  # runqmc clears its own lock, we do not
 
 
 def test_refuses_a_nonsense_nproc(workdir, fake_runqmc):
@@ -271,7 +261,7 @@ def test_run_to_completion(workdir, tmp_path, fake_runqmc, python_path):
     store = jobs.JobStore()
 
     started = runtime.start(str(workdir), nproc=2, store=store)
-    assert started['command'].endswith('-p 2')
+    assert started['command'][-2:] == ['-p', '2']
     assert started['job_id'] in store.index()
 
     state = wait_for(lambda: (s := runtime.status(started['job_id'], store))['status'] != 'running' and s)
@@ -662,33 +652,8 @@ def test_prepare_says_which_keywords_it_changed(calculation, tmp_path):
 
 # --- the blank Jastrow that goes with it ----------------------------------------------
 
+
 # As much of a gwfn.data as the geometry needs: a molecule of two elements, one of them twice.
-ORBITALS = """TITLE
- water
-
-GEOMETRY
---------
-Number of atoms:
-         3
-Atomic numbers for each atom:
-         8         1         1
-Valence charges for each atom:
- 6.0000000000000E+00 1.0000000000000E+00 1.0000000000000E+00
-
-BASIS SET
-"""
-
-
-@pytest.fixture
-def orbitals_only(tmp_path):
-    """A directory as an orbital code leaves it: a wave function, an input, and no Jastrow."""
-    path = tmp_path / 'hf'
-    path.mkdir()
-    (path / 'gwfn.data').write_text(ORBITALS)
-    (path / 'input').write_text(input_file.build('vmc', {'neu': '5', 'ned': '5', 'atom_basis_type': 'gaussian'}))
-    return path
-
-
 def test_prepare_writes_the_jastrow_a_calculation_with_none_needs(orbitals_only, tmp_path):
     """The first calculation of a chain: `use_jastrow : T` and nothing for it to read."""
     prepared = runtime.prepare(
@@ -868,11 +833,12 @@ def test_a_prepared_directory_is_one_casino_run_will_accept(calculation, tmp_pat
 def test_defaults_are_the_documented_ones(workdir, fake_runqmc, python_path):
     fake_runqmc()
     started = runtime.start(str(workdir))
-    assert started['command'].endswith(f'-p {settings.NPROC}')
-    assert '--version' not in started['command']  # the default flavour is runqmc's own
+    assert started['command'][-2:] == ['-p', str(settings.NPROC)]
+    # the default flavour is runqmc's own, and `--version=debug` is one argument, so a prefix is what to look for
+    assert not any(argument.startswith('--version') for argument in started['command'])
 
 
 def test_a_non_default_version_reaches_the_command_line(workdir, fake_runqmc, python_path):
     fake_runqmc()
     started = runtime.start(str(workdir), nproc=3, version='debug')
-    assert started['command'].endswith('-p 3 --version=debug')
+    assert started['command'][-3:] == ['-p', '3', '--version=debug']

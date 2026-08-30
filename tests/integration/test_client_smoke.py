@@ -105,7 +105,8 @@ async def test_committed_reference_data_is_refused_over_the_protocol(example):
     async with mcp_session() as session:
         result = await call(session, 'casino_run', workdir=str(example))
 
-    assert 'error' in result
+    # a declared key is always on the wire, so what says a run was refused is the value
+    assert result['error'] is not None, result
     assert 'committed reference data' in result['error'] or 'earlier run' in result['error']
 
 
@@ -113,7 +114,7 @@ async def test_a_short_vmc_runs_to_completion(prepare):
     scratch = prepare('short', nstep=20000, nblock=2)
     async with mcp_session() as session:
         started = await call(session, 'casino_run', workdir=str(scratch), nproc=2)
-        assert 'job_id' in started, started
+        assert started['job_id'], started
 
         state = started
         for _ in range(120):
@@ -226,9 +227,11 @@ async def test_the_input_of_a_prepared_calculation_is_readable_before_it_runs(pr
     scratch = prepare('given', nstep=20000, nblock=2)
     async with mcp_session() as session:
         prepared = await call(session, 'casino_prepare', source=str(scratch), dest=str(scratch.parent / 'next'), overrides={'random_seed': '31415'})
-        assert 'error' not in prepared, prepared
+        # not `'error' not in prepared`: the reply is validated on the way out, so the key is
+        # always there and null is what "no error" looks like on the wire
+        assert prepared['error'] is None, prepared
 
-        given = await call(session, 'casino_input', job_id=prepared['dest'])
+        given = await call(session, 'casino_input', job_id=prepared['workdir'])
 
     assert given['keywords']['random_seed'] == '31415'
     assert given['runtype'] == 'vmc'

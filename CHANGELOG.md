@@ -80,6 +80,27 @@ All notable changes to this project are documented here. The format follows
   fills the field in. Guarded now by a unit test that puts a real `binary_stamp()`, in both the
   shapes it has, through `JobState`; the tests that stub the runtime out call the tool as a
   plain function and never reach the output model at all.
+- **The three tools that act rather than read now have an output schema too.** `casino_run`,
+  `casino_prepare` and `casino_stop` were declared `-> dict[str, Any]`, so what reached the
+  model was `{"type": "object", "additionalProperties": true}`: not one field name, not one
+  unit, and nothing a test could compare against what the runtime actually answers. That is the
+  hole `binary` lived in for five releases — a reply nothing describes is a reply nothing can
+  check. They return `Started`, `Prepared` and `Stopped` now, with `BinaryStamp`,
+  `CorrelationData`, `GeminalPlan`, `Terminated` and `Halt` under them, so a caller reading a
+  stop can see that `terminated.scope` says whether the ranks or the whole process group were
+  signalled and that `halt.updated_input` is what decides whether the run can be continued.
+  Guarded by a test per tool that puts a real call's answer through the model that declares it,
+  and by three that hold the module rather than a list: every model in it describes its fields,
+  every tool answers with one of them, and every one of them is reached by a tool. The list
+  this replaces named five of the fifteen models, so nothing held the ones added after it was
+  written — which is the same way `binary` survived. What is guarded now is the annotation, not
+  the three tools that happened to have the wrong one.
+- **`command` means one thing again.** `casino_run` answered with `' '.join(command)` while
+  `casino_status` answered with the argv under the same key, so the same name on the same
+  surface had two types. It is the argv everywhere now, in `casino_run` and in the `halt`
+  report: the exact arguments, which a joined string cannot be parsed back into.
+- `casino_prepare` no longer sends `wrote: null` alongside a refusal. It was there to say
+  nothing had been written, which is what the refusal says.
 
 ## [0.5.0] — 2026-08-30
 

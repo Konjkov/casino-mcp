@@ -527,7 +527,7 @@ def prepare(
     writing = (('correlation.data',) if (jastrow or backflow) else ()) + (('parameters.casl',) if geminal is not None else ())
     errors = input_file.check(keywords, blocks) + input_file.check_files(source_path, keywords, writing=writing) + correlation_errors + geminal_errors
     if errors:
-        return {'error': 'the input this would write does not describe a run CASINO can do', 'problems': errors, 'wrote': None}
+        return {'error': 'the input this would write does not describe a run CASINO can do', 'problems': errors}
 
     dest_path.mkdir(parents=True, exist_ok=True)
     copied = copy_inputs(source_path, dest_path)
@@ -622,7 +622,7 @@ def start(
         'job_id': job_id,
         'pid': process.pid,
         'workdir': str(path),
-        'command': ' '.join(command),
+        'command': command,  # the argv, as the job record and casino_status also give it
         'started': meta['created'],
         'binary': meta['binary'],
         'removed': removed,  # named, so a restart that ate more than expected is visible in the reply
@@ -872,10 +872,10 @@ def halt(path: Path, keep_input: Path | None = None, timeout: float = settings.H
     try:
         result = subprocess.run(command, cwd=path, env=env, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return {'command': ' '.join(command), 'error': f'haltqmc did not run: {e}', 'lock_cleared': clear_lock(path)}
+        return {'command': command, 'error': f'haltqmc did not run: {e}', 'lock_cleared': clear_lock(path)}
 
     report = {
-        'command': ' '.join(command),
+        'command': command,
         'exit_code': result.returncode,
         'updated_input': helper is not None and result.returncode == 0,
         'input_saved': saved,  # the input as it was before haltqmc rewrote it, or None

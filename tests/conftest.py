@@ -12,11 +12,12 @@ Two rules hold everywhere below:
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from casino_mcp import runtime
+from casino_mcp import input_file, runtime
 
 DATA = Path(__file__).resolve().parent / 'data'
 READ_ENV = (
@@ -34,6 +35,18 @@ READ_ENV = (
 # The 18 are a settings cover -- one calculation per distinct runtype, basis, optimiser and
 # wavefunction option -- so a clean checkout has something of every kind to parse and re-run.
 EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
+
+
+def wait_for(predicate, timeout=30.0, interval=0.1):
+    """Wait for something a spawned launcher does. Here rather than in one test module: a
+    process is what both the runtime tests and the model tests need to catch mid-flight."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    raise AssertionError(f'timed out after {timeout}s')
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +87,32 @@ def workdir(tmp_path):
     path = tmp_path / 'calc'
     path.mkdir()
     (path / 'input').write_text('#-------------------#\n# CASINO input file #\n#-------------------#\nruntype : vmc\n')
+    return path
+
+
+ORBITALS = """TITLE
+ water
+
+GEOMETRY
+--------
+Number of atoms:
+         3
+Atomic numbers for each atom:
+         8         1         1
+Valence charges for each atom:
+ 6.0000000000000E+00 1.0000000000000E+00 1.0000000000000E+00
+
+BASIS SET
+"""
+
+
+@pytest.fixture
+def orbitals_only(tmp_path):
+    """A directory as an orbital code leaves it: a wave function, an input, and no Jastrow."""
+    path = tmp_path / 'hf'
+    path.mkdir()
+    (path / 'gwfn.data').write_text(ORBITALS)
+    (path / 'input').write_text(input_file.build('vmc', {'neu': '5', 'ned': '5', 'atom_basis_type': 'gaussian'}))
     return path
 
 
