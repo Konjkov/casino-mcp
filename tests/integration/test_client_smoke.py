@@ -197,7 +197,8 @@ async def test_a_job_outlives_the_server_that_started_it(prepare):
 async def test_an_unknown_job_is_an_error_payload_not_a_protocol_error(example):
     async with mcp_session() as session:
         result = await call(session, 'casino_status', job_id='does-not-exist')
-    assert result['error'] == 'unknown job does-not-exist'
+    # every tool that takes a job takes a directory too, so the refusal says both were tried
+    assert result['error'] == 'unknown job does-not-exist: not a job id in the registry, and not a directory'
     # the reply is validated against the output schema on the way out, so every field the runtime
     # had no answer for arrives as a null rather than as an absent key
     assert {key for key, value in result.items() if value is not None} == {'error'}
