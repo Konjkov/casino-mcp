@@ -206,6 +206,28 @@ class JobStore:
                 continue
         return out
 
+    def running(self) -> list:
+        """The jobs still going, newest first, without reading the ones that are not.
+
+        A job whose launcher wrote `status.json` has ended, and finding that out is one stat
+        call: the meta and the /proc lookup are paid only for the few that might still be
+        alive. `casino_run` asks this on every call, and a full registry is 200 records.
+
+        A job that casino_stop has signalled but that has not gone yet is still running here,
+        which is what it is: it still has the cores.
+        """
+        live = []
+        for job_id in sorted(self.index(), reverse=True):
+            if (jobs_dir() / job_id / 'status.json').is_file():
+                continue
+            try:
+                state = self.status(job_id)
+            except KeyError:
+                continue  # the index outlived the job directory
+            if state['status'] == 'running':
+                live.append(state)
+        return live
+
 
 def create(command: list[str], workdir: Path, nproc: int, version: str) -> tuple[str, Path, dict]:
     """A job directory with its frozen meta.json, before anything is spawned."""

@@ -46,6 +46,20 @@ All notable changes to this project are documented here. The format follows
   in the registry because `haltqmc -u` rewrites the file in place and the rewrite is lossy.
 - `casino_list_jobs(limit, workdir)` filters to one directory: what a chain of runs did in one
   place, and the way to see that a directory has been run twice.
+- **Runs are one at a time, and `casino_run(allow_concurrent=true)` is how they are not.** A
+  second run is refused while a job this server started is going -- not because the machine is
+  busy, but because of what sharing it does to the numbers: `Total CASINO CPU time` counts CPU
+  seconds across the MPI processes, and two jobs that landed on the same core measured 97.2 s
+  of CPU against 194.41 s of real time, with `efficiency` wrong by the same factor and nothing
+  in the output saying so. The reply on the override names what it runs beside, under
+  `concurrent`. A job running in the *same* directory is refused with no override at all --
+  one directory is one calculation -- and that check is asked before the `.runqmc.lock` one,
+  which would otherwise offer `unlock=true` and turn the caller loose on a live calculation.
+  Only jobs this server started are known: a `pgrep casino` over the machine is deliberately
+  not done, because "something is computing" with no owner and no job id is a refusal the
+  caller has nothing to answer with. So reading `cpu_time` against `real_time` afterwards is
+  not a backstop but the check that holds, and it is one
+  `casino_results(fields=['cpu_time', 'real_time'])`.
 
 ### Changed
 

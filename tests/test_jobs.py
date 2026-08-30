@@ -154,6 +154,35 @@ def test_all_status_is_newest_first(workdir):
     assert [state['job_id'] for state in store.all_status()] == sorted(ids, reverse=True)
 
 
+def test_running_is_the_jobs_that_are_still_going(workdir):
+    store = jobs.JobStore()
+    live, _ = make_job(store, workdir)
+    ended, ended_dir = make_job(store, workdir)
+    jobs.write_json(ended_dir / 'status.json', {'exit_code': 0, 'finished': 'x', 'finished_epoch': time.time()})
+    gone, _ = make_job(store, workdir, pid=999999, **{'start_time': None})
+
+    assert [state['job_id'] for state in store.running()] == [live]
+    assert {state['job_id'] for state in store.all_status()} == {live, ended, gone}
+
+
+def test_running_does_not_read_the_jobs_that_have_ended(workdir, monkeypatch):
+    """`casino_run` asks this on every call, and a full registry is KEEP_JOBS records.
+
+    A launcher that wrote `status.json` has ended, and finding that out is one stat call: the
+    meta and the /proc lookup are what this must not pay for the ones that are over.
+    """
+    store = jobs.JobStore()
+    for _ in range(5):
+        _, job_dir = make_job(store, workdir)
+        jobs.write_json(job_dir / 'status.json', {'exit_code': 0, 'finished': 'x', 'finished_epoch': time.time()})
+    live, _ = make_job(store, workdir)
+
+    read = []
+    monkeypatch.setattr(jobs.JobStore, 'meta', lambda self, job_id: read.append(job_id) or jobs.read_json(jobs.jobs_dir() / job_id / 'meta.json'))
+    assert [state['job_id'] for state in store.running()] == [live]
+    assert read == [live], 'the five that ended were passed over on the stat alone'
+
+
 def test_a_job_whose_directory_is_gone_is_skipped_not_fatal(workdir):
     store = jobs.JobStore()
     job_id, job_dir = make_job(store, workdir)

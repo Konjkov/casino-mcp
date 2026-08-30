@@ -253,6 +253,78 @@ def test_a_refusal_creates_no_job_record(workdir):
     assert jobs.JobStore().index() == {}
 
 
+# --- one machine, one run at a time ---------------------------------------------------
+
+
+@pytest.fixture
+def a_running_job(workdir, fake_runqmc, python_path):
+    """A job that will still be going when the next start is attempted."""
+    fake_runqmc(sleep=300)
+    started = runtime.start(str(workdir))
+    wait_for(lambda: (workdir / '.runqmc.lock').exists())
+    yield started
+    runtime.stop(started['job_id'], timeout=10.0)
+
+
+def test_a_second_run_in_the_same_directory_is_refused_with_no_way_round_it(a_running_job, workdir):
+    """One directory is one calculation: runqmc appends to the same `out` and both write the same files.
+
+    Not covered by the `out` and `.runqmc.lock` refusals, which is why this exists: both look at
+    files the run has not written yet in its first seconds, and the registry knows at once.
+    """
+    error = runtime.start(str(workdir))['error']
+    assert a_running_job['job_id'] in error
+    assert 'no override' in error and 'casino_stop' in error
+    # and the flag that lets two runs share a machine does not let two share a directory
+    assert runtime.start(str(workdir), allow_concurrent=True)['error'] == error
+
+
+def test_a_run_elsewhere_is_refused_while_one_is_going_and_says_which(a_running_job, tmp_path, workdir):
+    other = tmp_path / 'other'
+    other.mkdir()
+    (other / 'input').write_text('runtype : vmc\n')
+
+    error = runtime.start(str(other))['error']
+    assert a_running_job['job_id'] in error and str(workdir) in error
+    assert 'allow_concurrent=true' in error
+    # what the refusal is actually about: the timings, not the machine being busy
+    assert 'CPU time' in error and 'efficiency' in error
+
+
+def test_allow_concurrent_starts_it_and_names_what_it_runs_beside(a_running_job, tmp_path, workdir):
+    other = tmp_path / 'other'
+    other.mkdir()
+    (other / 'input').write_text('runtype : vmc\n')
+
+    started = runtime.start(str(other), allow_concurrent=True)
+    assert started['concurrent'] == [{'job_id': a_running_job['job_id'], 'workdir': str(workdir), 'nproc': 1}]
+    assert 'cpu_time' in started['note'] and 'real_time' in started['note']
+    runtime.stop(started['job_id'], timeout=10.0)
+
+
+def test_a_concurrent_refusal_does_not_empty_the_directory_first(a_running_job, tmp_path):
+    """`restart` deletes what an earlier run left, and a refused run must not have deleted anything.
+
+    The order in `start` is load-bearing: every refusal comes before `clear_debris`, or a run
+    that is turned away has already destroyed the `out` it was turned away from.
+    """
+    other = tmp_path / 'other'
+    other.mkdir()
+    (other / 'input').write_text('runtype : vmc\n')
+    (other / 'out').write_text('an earlier run\n')
+
+    assert a_running_job['job_id'] in runtime.start(str(other), restart=True)['error']
+    assert (other / 'out').read_text() == 'an earlier run\n'
+
+
+def test_a_job_that_has_ended_is_not_in_the_way(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    first = run_and_finish(workdir, restart=True)
+    second = runtime.start(str(workdir), restart=True)
+    assert second['job_id'] != first
+    assert 'concurrent' not in second
+
+
 # --- a real launcher round trip ------------------------------------------------------
 
 
@@ -381,9 +453,22 @@ def test_unknown_job_ids_are_errors_not_exceptions():
     assert 'no job has run in' in runtime.status('.')['error']
 
 
+def run_and_finish(workdir, **kwargs) -> str:
+    """Start a run and let it end, which is what a caller does with casino_wait.
+
+    Runs are sequential now: a second one while the first is going is refused, and a job counts
+    as going until its launcher has recorded an exit code -- which is a moment later than the
+    `runqmc` process ending.
+    """
+    started = runtime.start(str(workdir), **kwargs)
+    assert 'error' not in started, started
+    wait_for(lambda: runtime.status(started['job_id'])['status'] != 'running')
+    return started['job_id']
+
+
 def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
     fake_runqmc()
-    ids = [runtime.start(str(workdir), restart=True)['job_id'] for _ in range(3)]
+    ids = [run_and_finish(workdir, restart=True) for _ in range(3)]
 
     listed = runtime.listing(limit=2)['jobs']
     assert [job['job_id'] for job in listed] == sorted(ids, reverse=True)[:2]
@@ -392,7 +477,7 @@ def test_listing_is_newest_first_and_limited(workdir, fake_runqmc, python_path):
 def test_a_directory_names_its_newest_job(workdir, fake_runqmc, python_path):
     """What a campaign holds is the directory; the job id of the run in it is never seen."""
     fake_runqmc()
-    ids = [runtime.start(str(workdir), restart=True)['job_id'] for _ in range(2)]
+    ids = [run_and_finish(workdir, restart=True) for _ in range(2)]
 
     assert runtime.status(str(workdir))['job_id'] == ids[-1]
     assert runtime.results(str(workdir))['job_id'] == ids[-1]
@@ -402,11 +487,11 @@ def test_a_directory_names_its_newest_job(workdir, fake_runqmc, python_path):
 
 def test_listing_filters_by_directory(workdir, tmp_path, fake_runqmc, python_path):
     fake_runqmc()
-    here = runtime.start(str(workdir), restart=True)['job_id']
+    here = run_and_finish(workdir, restart=True)
     other = tmp_path / 'other'
     other.mkdir()
     (other / 'input').write_text('runtype : vmc\n')
-    runtime.start(str(other), restart=True)
+    run_and_finish(other, restart=True)
 
     assert [job['job_id'] for job in runtime.listing(workdir=str(workdir))['jobs']] == [here]
 

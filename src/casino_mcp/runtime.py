@@ -567,6 +567,50 @@ def build_command(runqmc: str, nproc: int, version: str, unlock: bool, resume: b
     return command + list(extra)
 
 
+def check_directory_free(live: list, path: Path) -> str:
+    """Whether a job of ours is already running in this very directory.
+
+    Asked before `check_workdir`, and that order is the point: the `.runqmc.lock` in there is
+    this job's, and the lock refusal offers `unlock=true` for a lock left by a runqmc that
+    died. Here nothing died, so that offer would turn the caller loose on a calculation that
+    is still running. The registry knows whose the lock is; the lock file does not.
+    """
+    here = [job for job in live if job['workdir'] == str(path)]
+    if not here:
+        return ''
+    job = here[0]
+    return (
+        f'job {job["job_id"]} is already running in {path} (pid {job["pid"]}). One directory is one calculation: '
+        f'runqmc appends to the same `out` and both runs write the same files over each other. '
+        f'There is no override -- stop it with casino_stop, or wait for it with casino_wait.'
+    )
+
+
+def check_machine_free(live: list, allow_concurrent: bool) -> str:
+    """Whether this run may start while other jobs of ours are going. Only this registry counts.
+
+    A `pgrep casino` over the machine is deliberately not done: someone else's process is
+    someone else's business, and "something is computing" with no owner and no job id is a
+    refusal the caller has nothing to answer with except `allow_concurrent` -- a refusal for
+    its own sake. What this can speak for is what it started itself.
+
+    So the check after the fact stays obligatory rather than becoming a backstop: a run
+    started around the server spoils the timing just the same and the registry never sees it.
+    `fields=['cpu_time', 'real_time']` is the one call that reads it back.
+    """
+    if not live or allow_concurrent:
+        return ''
+    names = ', '.join(f'{job["job_id"]} in {job["workdir"]}' for job in live)
+    return (
+        f'{len(live)} job(s) of this server are still running: {names}. Two CASINO runs share the cores of one '
+        f'machine, and then `Total CASINO CPU time` and everything computed from it -- efficiency above all -- '
+        f'stop meaning what they say: two jobs that landed on one core measured 97.2 s of CPU against 194.41 s '
+        f'of real time. Pass allow_concurrent=true if this machine has the cores for both. '
+        f'Only jobs this server started are known here, so a run started around it is not covered: '
+        f'read cpu_time and real_time back afterwards either way.'
+    )
+
+
 def start(
     workdir: str,
     nproc: int = settings.NPROC,
@@ -574,6 +618,7 @@ def start(
     restart: bool = False,
     resume: bool = False,
     unlock: bool = False,
+    allow_concurrent: bool = False,
     store: jobs.JobStore | None = None,
 ) -> dict[str, Any]:
     """Spawn a launcher for one runqmc run and return its job record. Does not wait."""
@@ -582,7 +627,8 @@ def start(
         return {'error': f'nproc must be at least 1, got {nproc}'}
 
     path = Path(workdir).expanduser().resolve()
-    refusal = check_workdir(path, restart, resume, unlock)
+    live = store.running()
+    refusal = check_directory_free(live, path) or check_workdir(path, restart, resume, unlock)
     if refusal:
         return {'error': refusal}
 
@@ -600,6 +646,10 @@ def start(
                 f'Pass restart=true to run it again from the beginning, or run in a fresh directory.'
             )
         }
+
+    refusal = check_machine_free(live, allow_concurrent)
+    if refusal:
+        return {'error': refusal}
 
     # After the last thing that can refuse, never before: a directory is not emptied for a run
     # that then fails to start.
@@ -627,14 +677,25 @@ def start(
         'binary': meta['binary'],
         'removed': removed,  # named, so a restart that ate more than expected is visible in the reply
     }
+    notes = []
     if resume:
         started['resume'] = mode
         if mode == 'halted':
-            started['note'] = (
+            notes.append(
                 'no continuation info in `out`: this run was interrupted rather than stopped by a time limit, '
                 'so it continues from the `input` that `haltqmc -u` rewrote, not with `runqmc --continue`. '
                 'If the job was not stopped through casino_stop, run haltqmc -f -u there first.'
             )
+    if live:
+        # named rather than described: which runs this one shared the machine with is what the
+        # timings of all of them have to be read against afterwards
+        started['concurrent'] = [{'job_id': job['job_id'], 'workdir': job['workdir'], 'nproc': job['nproc']} for job in live]
+        notes.append(
+            f'started alongside {len(live)} running job(s), which allow_concurrent asked for: they share this '
+            f'machine, so `cpu_time` against `real_time` is what says whether either run got the cores it was given.'
+        )
+    if notes:
+        started['note'] = ' '.join(notes)
     return started
 
 

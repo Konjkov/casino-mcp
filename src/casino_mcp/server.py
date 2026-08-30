@@ -106,6 +106,14 @@ class Started(BaseModel):
     removed: list[str] | None = Field(
         None, description='what `restart` deleted before starting, named so that a restart that ate more than was expected is visible here'
     )
+    concurrent: list[dict[str, Any]] | None = Field(
+        None,
+        description=(
+            'the jobs that were already running when this one started, each {job_id, workdir, nproc}, and only '
+            'present when allow_concurrent let it start beside them. They share the machine, so the timings of all '
+            'of them have to be read against each other'
+        ),
+    )
     resume: Literal['continue', 'halted'] | None = Field(
         None,
         description=(
@@ -350,6 +358,7 @@ def casino_run(
     restart: bool = False,
     resume: bool = False,
     unlock: bool = False,
+    allow_concurrent: bool = False,
 ) -> Started:
     """Start a CASINO calculation in workdir and return immediately.
 
@@ -377,8 +386,20 @@ def casino_run(
         that `haltqmc -u` rewrote. The reply says which one under `resume`. A run that
         reached its own end is refused -- there is nothing to continue.
     unlock: clear a stale .runqmc.lock left by a runqmc instance that died.
+    allow_concurrent: start even though another job of this server is still running. Refused by
+        default, because two CASINO runs share the cores of one machine and then `Total CASINO
+        CPU time` -- and `efficiency`, which is computed from it -- stop meaning what they say:
+        two jobs that landed on the same core measured 97.2 s of CPU against 194.41 s of real
+        time. Pass it when the machine has the cores for both; the reply then names the jobs it
+        started beside, under `concurrent`. It does not unlock a second run in a directory that
+        already has one -- one directory is one calculation, and nothing overrides that. Only
+        jobs this server started are known, so a run started around it is invisible here: read
+        `cpu_time` and `real_time` back afterwards either way, which is one
+        `casino_results(fields=['cpu_time', 'real_time'])`.
     """
-    return runtime.start(workdir, nproc=nproc, version=version, restart=restart, resume=resume, unlock=unlock)  # type: ignore[return-value]
+    return runtime.start(  # type: ignore[return-value]
+        workdir, nproc=nproc, version=version, restart=restart, resume=resume, unlock=unlock, allow_concurrent=allow_concurrent
+    )
 
 
 @server.tool()

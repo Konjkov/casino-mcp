@@ -61,6 +61,7 @@ def cmd_run(args) -> int:
             restart=args.restart,
             resume=args.resume,
             unlock=args.unlock,
+            allow_concurrent=args.allow_concurrent,
         )
     )
 
@@ -189,6 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
         help='carry on an interrupted run: `runqmc --continue`, or a plain runqmc over the input haltqmc updated',
     )
     run.add_argument('--unlock', action='store_true', help='clear a stale .runqmc.lock')
+    run.add_argument(
+        '--allow-concurrent',
+        action='store_true',
+        help='start even though another job of this server is running; they then share the cores, and cpu_time says so',
+    )
     run.set_defaults(func=cmd_run)
 
     status = sub.add_parser('status', help='state of one job')

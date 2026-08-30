@@ -76,7 +76,7 @@ not ours.
 
 | tool | returns |
 | --- | --- |
-| `casino_run(workdir, nproc, version, restart, resume, unlock)` | job_id, pid, workdir, command, binary stamp, what `restart` removed |
+| `casino_run(workdir, nproc, version, restart, resume, unlock, allow_concurrent)` | job_id, pid, workdir, command, binary stamp, what `restart` removed |
 | `casino_status(job_id)` | running / finished / failed / stopped / unknown, pid, runtime, exit code |
 | `casino_wait(job_id, timeout)` | the same, once the calculation has ended — plus `waited` and `timed_out` |
 | `casino_stop(job_id, timeout)` | what was signalled, final status, what `haltqmc` did |
@@ -220,6 +220,27 @@ default, and there are two ways past it — opposites, so pass one:
 On the command line these are `--restart` and `--resume`, and `--continue` is accepted for
 the latter, which is what `runqmc` calls it. The tool parameter cannot be spelled that way:
 `continue` is a Python keyword.
+
+### One machine, one run at a time
+
+A second run is refused while a job this server started is still going. Not because the
+machine is busy — because of what sharing it does to the numbers. Two CASINO runs land on the
+cores the scheduler gives them, and `Total CASINO CPU time` counts seconds of CPU across the
+MPI processes: two jobs that ended up on the same core measured **97.2 s of CPU against
+194.41 s of real time**, and `efficiency`, which is computed from the CPU time, was wrong by
+the same factor. Nothing in the output says this happened. The ratio of `cpu_time` to
+`real_time` does, which is one `casino_results(fields=['cpu_time', 'real_time'])`.
+
+| | |
+| --- | --- |
+| another job of this server is running | refused; `allow_concurrent=true` starts it anyway, and the reply then names what it runs beside, under `concurrent` |
+| a job of this server is running **in this directory** | refused, and nothing overrides it. One directory is one calculation. Stop it with `casino_stop` or wait for it with `casino_wait` |
+
+Only jobs this server started are known here. A `pgrep casino` over the machine is
+deliberately not done: someone else's process is someone else's business, and "something is
+computing" with no owner and no job id is a refusal the caller has nothing to answer with. So
+the reading afterwards is not a backstop but the check that actually holds — a run started
+around the server spoils the timings just the same, and the registry never sees it.
 
 ### Stopping a run, and continuing it
 

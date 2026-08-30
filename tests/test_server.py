@@ -48,7 +48,7 @@ def test_no_generic_shell_tool_exists():
 
 def test_run_signature_matches_the_runtime():
     parameters = inspect.signature(server.casino_run).parameters
-    assert list(parameters) == ['workdir', 'nproc', 'version', 'restart', 'resume', 'unlock']
+    assert list(parameters) == ['workdir', 'nproc', 'version', 'restart', 'resume', 'unlock', 'allow_concurrent']
     # these defaults are in the schema the model reads, so they must be the real ones
     assert parameters['nproc'].default == settings.NPROC
     assert parameters['version'].default == settings.VERSION
@@ -103,7 +103,8 @@ def test_run_passes_every_argument_through(monkeypatch):
     seen = {}
     monkeypatch.setattr(runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {})
     server.casino_run('/tmp/calc', nproc=4, version='debug', restart=True, unlock=True)
-    assert seen == {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True}
+    expected = {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True, 'allow_concurrent': False}
+    assert seen == expected
 
 
 def test_the_binary_stamp_survives_the_output_model(tmp_path, monkeypatch):
@@ -258,7 +259,7 @@ async def test_the_schemas_reach_the_wire():
     assert tools['casino_list_jobs'].output_schema['properties']['jobs']['anyOf'][0]['items']['$ref'].endswith('JobState')
     # the three that act rather than read carried `{"type": "object"}` and nothing else, which
     # is the hole `binary` lived in: a reply nothing describes is a reply nothing can check.
-    assert set(tools['casino_run'].output_schema['properties']) >= {'job_id', 'command', 'binary', 'removed', 'resume'}
+    assert set(tools['casino_run'].output_schema['properties']) >= {'job_id', 'command', 'binary', 'removed', 'resume', 'concurrent'}
     assert set(tools['casino_prepare'].output_schema['properties']) >= {'workdir', 'copied', 'changed', 'warnings'}
     assert set(tools['casino_stop'].output_schema['properties']) >= {'status', 'terminated', 'halt'}
 

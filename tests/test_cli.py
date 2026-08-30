@@ -169,7 +169,8 @@ def test_run_forwards_its_flags(monkeypatch, capsys, workdir):
     code, _ = run(capsys, 'run', str(workdir), '-p', '4', '--version', 'debug', '--restart', '--unlock')
 
     assert code == 0
-    assert seen == {'workdir': str(workdir), 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True}
+    expected = {'workdir': str(workdir), 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True, 'allow_concurrent': False}
+    assert seen == expected
 
 
 def test_continue_is_spelled_the_way_runqmc_spells_it(monkeypatch, capsys, workdir):
