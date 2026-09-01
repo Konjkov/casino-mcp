@@ -33,7 +33,7 @@ Since 0.1.0 it is a standalone pip-installable package with its own repository, 
 directory inside PyCasino. Layout:
 
 ```
-pyproject.toml             casino-mcp 0.5.0, entry point `casino-mcp`. The only TOML here
+pyproject.toml             casino-mcp 0.6.0, entry point `casino-mcp`. The only TOML here
 src/casino_mcp/
     settings.py    where CASINO is, where our state goes: the environment, and constants
     parse_out.py   CASINO `out` + `dmc.status` -> structured phases (no MCP, no dependencies)

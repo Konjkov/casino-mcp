@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/) — pre-1.0, so the minor version may break things.
 
-## [Unreleased]
+## [0.6.0] — 2026-09-01
 
 ### Added
 
@@ -446,7 +446,10 @@ to the model are not shipped yet.
 - Nothing shells out to `envmc`/`endmc` at runtime; `endmc` misparses numbers under a non-C
   locale.
 
-[Unreleased]: https://github.com/Konjkov/casino-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Konjkov/casino-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Konjkov/casino-mcp/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/Konjkov/casino-mcp/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/Konjkov/casino-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Konjkov/casino-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Konjkov/casino-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Konjkov/casino-mcp/releases/tag/v0.1.0
