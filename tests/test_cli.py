@@ -169,7 +169,16 @@ def test_run_forwards_its_flags(monkeypatch, capsys, workdir):
     code, _ = run(capsys, 'run', str(workdir), '-p', '4', '--version', 'debug', '--restart', '--unlock')
 
     assert code == 0
-    expected = {'workdir': str(workdir), 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True, 'allow_concurrent': False}
+    expected = {
+        'workdir': str(workdir),
+        'nproc': 4,
+        'version': 'debug',
+        'restart': True,
+        'resume': False,
+        'unlock': True,
+        'allow_concurrent': False,
+        'keep_previous': False,
+    }
     assert seen == expected
 
 

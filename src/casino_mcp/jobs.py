@@ -145,6 +145,21 @@ class JobStore:
         # to the second and is all such a record has
         return max(here, key=lambda job_id: (index[job_id].get('created_epoch') or 0, job_id))
 
+    def record_out(self, job_id: str, name: str) -> None:
+        """Point this job's record at the file its output ended up in.
+
+        A job knows its directory, and until now it found its output in it by the name `out`.
+        That holds for exactly as long as one run has happened there, and `keep_previous` is
+        the moment it stops holding: the file is moved aside and the next run writes a new
+        `out` over the name. Whoever asks this job for its results afterwards has to be sent
+        to the file this job actually wrote.
+        """
+        meta = self.meta(job_id)
+        if meta is None:
+            raise KeyError(job_id)
+        meta['out'] = name
+        write_json(jobs_dir() / job_id / 'meta.json', meta)
+
     def mark_stopped(self, job_id: str) -> None:
         """Record that this job was stopped on purpose.
 
@@ -172,6 +187,9 @@ class JobStore:
             'pid': meta['pid'],
             'started': meta['created'],
             'binary': meta.get('binary'),
+            # `.get`, because records written before keep_previous existed have no such key and
+            # every one of them wrote the file under its plain name
+            'out': meta.get('out', 'out'),
         }
         if finished is None:
             alive = proc_alive(meta['pid'], meta.get('start_time'))
@@ -243,6 +261,7 @@ def create(command: list[str], workdir: Path, nproc: int, version: str) -> tuple
         'created': now(),
         'created_epoch': time.time(),
         'binary': binary_stamp(version),
+        'out': 'out',  # until a later run's keep_previous moves this one's output aside
         'pid': None,
         'start_time': None,
     }

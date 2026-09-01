@@ -86,7 +86,7 @@ async def test_the_advertised_tools_are_the_eight(example):
         'casino_prepare',
     }
     run = next(tool for tool in listed.tools if tool.name == 'casino_run')
-    assert set(run.input_schema['properties']) == {'workdir', 'nproc', 'version', 'restart', 'resume', 'unlock', 'allow_concurrent'}
+    assert set(run.input_schema['properties']) == {'workdir', 'nproc', 'version', 'restart', 'resume', 'unlock', 'allow_concurrent', 'keep_previous'}
     assert run.input_schema['required'] == ['workdir']
 
     # `overrides` is a mapping whose values may be null -- that is what deletes a keyword -- and

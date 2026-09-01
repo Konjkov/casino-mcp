@@ -47,6 +47,8 @@ FINISHED_MARKER = 'Total CASINO CPU time'
 # and a numbered one is a product, only the numbered form is here: `parameters.4.casl` is what
 # an optimisation cycle wrote, `parameters.casl` is what it started from.
 DEBRIS = (
+    # and deliberately not `out.[0-9]*`: those are what keep_previous moved aside, and a
+    # restart that deleted them would be undoing the thing that flag was passed to do
     'out',
     'out_part.[0-9]*',  # earlier segments, put aside by a previous --continue
     '.out_proc*',  # per-process output a killed run never got to concatenate into `out`
@@ -126,6 +128,51 @@ def clear_debris(path: Path) -> list[str]:
                 victim.unlink(missing_ok=True)
             removed.append(victim.name)
     return removed
+
+
+def archive_out(path: Path) -> str:
+    """Move `out` aside to the first free `out.N` and name where it went, or '' if there was none.
+
+    `restart` otherwise deletes it, and with it the answer of the run before this one. Rerunning
+    in place is now the ordinary way to work -- a second run in an occupied directory is refused
+    outright -- so the alternative to this is copying the whole directory through casino_prepare,
+    which for a blip calculation means copying a `bwfn.data` of hundreds of megabytes to keep a
+    text file of ten kilobytes.
+
+    `out.N` and not `out_part.N`: the latter is runqmc's own name for the finished segments of a
+    `--continue`, it is in DEBRIS, and an archive under it would be deleted by the next restart.
+    The numbering ends up being the order the runs happened in, which is free and worth having.
+    """
+    out = path / 'out'
+    if not out.is_file():
+        return ''
+    n = 1
+    while (path / f'out.{n}').exists():
+        n += 1
+    out.rename(path / f'out.{n}')
+    return f'out.{n}'
+
+
+def record_archived_out(store: jobs.JobStore, path: Path, name: str) -> str:
+    """Point the job that wrote the archived `out` at its new name; answer which job that was.
+
+    This is the half that makes the flag worth having. A job record holds a directory, not a
+    file, so `casino_results` for a job whose directory has been rerun answers with the numbers
+    of the run that came after it -- under the old job's id, with its status and its start time,
+    and nothing in the reply says the physics belongs to something else.
+
+    The newest job of this directory is the one that wrote the `out` just moved. Unless its
+    record already names an archive: then the file was written by a runqmc this registry never
+    saw, and there is no record of ours to correct.
+    """
+    job_id = store.latest(path)
+    if job_id is None:
+        return ''
+    meta = store.meta(job_id)
+    if meta is None or meta.get('out', 'out') != 'out':
+        return ''
+    store.record_out(job_id, name)
+    return job_id
 
 
 def last_run(out: Path) -> list[str]:
@@ -619,12 +666,21 @@ def start(
     resume: bool = False,
     unlock: bool = False,
     allow_concurrent: bool = False,
+    keep_previous: bool = False,
     store: jobs.JobStore | None = None,
 ) -> dict[str, Any]:
     """Spawn a launcher for one runqmc run and return its job record. Does not wait."""
     store = store or jobs.JobStore()
     if nproc < 1:
         return {'error': f'nproc must be at least 1, got {nproc}'}
+    if keep_previous and not restart:
+        return {
+            'error': (
+                'keep_previous only means anything with restart=true, which is the only thing that deletes `out`. '
+                'A run without it either finds no `out` to keep, or is refused because there is one; and resume=true '
+                'leaves the file to CASINO, which appends to it or puts the finished segment aside as `out_part.N` itself.'
+            )
+        }
 
     path = Path(workdir).expanduser().resolve()
     live = store.running()
@@ -653,6 +709,8 @@ def start(
 
     # After the last thing that can refuse, never before: a directory is not emptied for a run
     # that then fails to start.
+    kept = archive_out(path) if restart and keep_previous else ''
+    previous = record_archived_out(store, path, kept) if kept else ''
     removed = clear_debris(path) if restart else []
     command = build_command(runqmc, nproc, version, unlock, resume=mode == 'continue')
     job_id, job_dir, meta = jobs.create(command, path, nproc, version)
@@ -678,6 +736,12 @@ def start(
         'removed': removed,  # named, so a restart that ate more than expected is visible in the reply
     }
     notes = []
+    if kept:
+        started['kept'] = kept
+        notes.append(
+            f'the `out` that was in this directory is now {kept} instead of being deleted'
+            + (f', and casino_results for job {previous} reads it from there.' if previous else '.')
+        )
     if resume:
         started['resume'] = mode
         if mode == 'halted':
@@ -753,10 +817,13 @@ def results(job_id: str, fields=None, store: jobs.JobStore | None = None) -> dic
     job_id = state['job_id']
 
     workdir = Path(state['workdir'])
-    out = workdir / 'out'
+    # The job's own file, which is `out` until a later run's keep_previous moved it aside. Named
+    # from the record and not assumed, or a rerun directory answers every one of its jobs with
+    # the numbers of the newest.
+    out = workdir / state.get('out', 'out')
     if not out.is_file():
         return {
-            'error': f'no `out` in {workdir}',
+            'error': f'no `{out.name}` in {workdir}',
             'job_id': job_id,
             'status': state['status'],
             'note': (

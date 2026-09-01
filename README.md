@@ -76,7 +76,7 @@ not ours.
 
 | tool | returns |
 | --- | --- |
-| `casino_run(workdir, nproc, version, restart, resume, unlock, allow_concurrent)` | job_id, pid, workdir, command, binary stamp, what `restart` removed |
+| `casino_run(workdir, nproc, version, restart, resume, unlock, allow_concurrent, keep_previous)` | job_id, pid, workdir, command, binary stamp, what `restart` removed and what it kept |
 | `casino_status(job_id)` | running / finished / failed / stopped / unknown, pid, runtime, exit code |
 | `casino_wait(job_id, timeout)` | the same, once the calculation has ended — plus `waited` and `timed_out` |
 | `casino_stop(job_id, timeout)` | what was signalled, final status, what `haltqmc` did |
@@ -241,6 +241,35 @@ deliberately not done: someone else's process is someone else's business, and "s
 computing" with no owner and no job id is a refusal the caller has nothing to answer with. So
 the reading afterwards is not a backstop but the check that actually holds — a run started
 around the server spoils the timings just the same, and the registry never sees it.
+
+### Rerunning a directory without losing the last answer
+
+`restart` deletes `out`, and with it what the previous run found. `keep_previous` moves it to
+the first free `out.1`, `out.2`, … instead; the rest of what `restart` deletes goes as before,
+and the reply says where the file went, under `kept`. The numbering ends up being the order
+the runs happened in.
+
+The archives are deliberately **not** in the list of things `restart` deletes, and they are
+not called `out_part.N` — that name is runqmc's own, for the finished segments of a
+`--continue`, and it *is* in that list.
+
+The half that matters is in the registry rather than in the directory. A job record holds a
+directory, not a file, so before this a `casino_results` for the earlier job read whatever
+`out` was in the directory now — and answered under the earlier job's id, with its status and
+its start time, and nothing in the reply saying the physics belonged to the run after it. The
+record follows the file, so each job goes on answering with its own numbers:
+
+```python
+first = casino_run(workdir='calc')['job_id']  # writes calc/out
+second = casino_run(workdir='calc', restart=True, keep_previous=True)  # out -> out.1
+casino_results(first)['cpu_time']  # from calc/out.1
+casino_results(second)['cpu_time']  # from calc/out
+casino_results('calc')['cpu_time']  # a directory still means its newest run
+```
+
+The alternative is a fresh directory through `casino_prepare`, which copies the wave function
+too — for a blip calculation, a `bwfn.data` of hundreds of megabytes to keep a text file of
+ten kilobytes.
 
 ### Stopping a run, and continuing it
 

@@ -325,6 +325,122 @@ def test_a_job_that_has_ended_is_not_in_the_way(workdir, fake_runqmc, python_pat
     assert 'concurrent' not in second
 
 
+# --- keeping what a restart would delete ----------------------------------------------
+
+
+def timed(seconds: float) -> str:
+    """An `out` of a finished run, told apart from another by its timing line."""
+    return STARTED + f' Total CASINO CPU time  : : :       {seconds:.4f} s\n Ends 2026/08/25 13:48:23.731\n'
+
+
+def test_keep_previous_moves_out_aside_instead_of_deleting_it(workdir, fake_runqmc, python_path):
+    (workdir / 'out').write_text('an earlier run\n')
+    fake_runqmc()
+
+    started = runtime.start(str(workdir), restart=True, keep_previous=True)
+
+    assert started['kept'] == 'out.1'
+    assert (workdir / 'out.1').read_text() == 'an earlier run\n'
+    assert 'out' not in started['removed']  # moved, so there was nothing left for clear_debris
+    assert 'out.1' in started['note']
+    wait_for(lambda: runtime.status(started['job_id'])['status'] != 'running')
+
+
+def test_the_archives_are_numbered_in_the_order_the_runs_happened(workdir, fake_runqmc, python_path):
+    """Free from the naming, and worth having: the directory ends up holding its own history."""
+    fake_runqmc()
+    run_and_finish(workdir)
+    run_and_finish(workdir, restart=True, keep_previous=True)
+    started = runtime.start(str(workdir), restart=True, keep_previous=True)
+    wait_for(lambda: runtime.status(started['job_id'])['status'] != 'running')
+
+    assert started['kept'] == 'out.2'
+    assert sorted(p.name for p in workdir.glob('out*')) == ['out', 'out.1', 'out.2']
+
+
+def test_a_later_restart_does_not_eat_the_archive(workdir):
+    """The one thing that would make the flag pointless: DEBRIS must not reach `out.N`.
+
+    `restart` deletes by pattern, and a pattern wide enough to catch runqmc's own `out_part.N`
+    would catch these too -- which is exactly why the archive is not named that.
+    """
+    (workdir / 'out').write_text('current\n')
+    (workdir / 'out.1').write_text('kept\n')
+    (workdir / 'out_part.1').write_text("runqmc's own\n")
+
+    removed = runtime.clear_debris(workdir)
+
+    assert (workdir / 'out.1').read_text() == 'kept\n'
+    assert set(removed) == {'out', 'out_part.1'}
+
+
+def test_an_archive_that_is_already_there_is_not_overwritten(workdir, fake_runqmc, python_path):
+    (workdir / 'out').write_text('this run\n')
+    (workdir / 'out.1').write_text('kept by hand\n')
+    fake_runqmc()
+
+    started = runtime.start(str(workdir), restart=True, keep_previous=True)
+
+    assert started['kept'] == 'out.2'
+    assert (workdir / 'out.1').read_text() == 'kept by hand\n'
+    wait_for(lambda: runtime.status(started['job_id'])['status'] != 'running')
+
+
+def test_keep_previous_with_nothing_to_keep_keeps_nothing(workdir, fake_runqmc, python_path):
+    """The first run of a fresh directory: the flag is not an error there, it is simply moot."""
+    fake_runqmc()
+    started = runtime.start(str(workdir), restart=True, keep_previous=True)
+    wait_for(lambda: runtime.status(started['job_id'])['status'] != 'running')
+
+    assert 'kept' not in started
+    assert list(workdir.glob('out.*')) == []
+
+
+def test_keep_previous_without_restart_is_refused(workdir, fake_runqmc):
+    fake_runqmc()
+    error = runtime.start(str(workdir), keep_previous=True)['error']
+    assert 'restart=true' in error
+    assert 'out_part' in error  # because resume is the other way a caller might mean it
+
+
+def test_the_earlier_job_still_answers_with_its_own_numbers(workdir, fake_runqmc, python_path):
+    """What the flag is for. A job record holds a directory, not a file.
+
+    Without the record following the archive, `casino_results` for the first job reads whatever
+    `out` is in the directory now -- and answers under the first job's id, with its status and
+    its start time, and nothing in the reply saying the physics belongs to the run after it.
+    """
+    fake_runqmc(out_text=timed(11.11))
+    first = run_and_finish(workdir)
+    fake_runqmc(out_text=timed(22.22))
+    second = run_and_finish(workdir, restart=True, keep_previous=True)
+
+    assert runtime.results(first)['cpu_time']['value'] == 11.11
+    assert runtime.results(second)['cpu_time']['value'] == 22.22
+    # and the report names the file it read, so the two are told apart without knowing the rule
+    assert runtime.results(first)['path'].endswith('/out.1')
+    assert runtime.results(second)['path'].endswith('/out')
+
+
+def test_a_directory_still_answers_with_its_newest_run(workdir, fake_runqmc, python_path):
+    """Naming the directory means the latest run in it, archives or no archives."""
+    fake_runqmc(out_text=timed(11.11))
+    run_and_finish(workdir)
+    fake_runqmc(out_text=timed(22.22))
+    run_and_finish(workdir, restart=True, keep_previous=True)
+
+    assert runtime.results(str(workdir))['cpu_time']['value'] == 22.22
+
+
+def test_an_archived_out_that_someone_deleted_says_which_file_is_missing(workdir, fake_runqmc, python_path):
+    fake_runqmc()
+    first = run_and_finish(workdir)
+    run_and_finish(workdir, restart=True, keep_previous=True)
+    (workdir / 'out.1').unlink()
+
+    assert runtime.results(first)['error'] == f'no `out.1` in {workdir}'
+
+
 # --- a real launcher round trip ------------------------------------------------------
 
 

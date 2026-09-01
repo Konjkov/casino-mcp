@@ -148,6 +148,28 @@ def test_launcher_that_vanished_is_unknown_not_finished(workdir):
     assert 'exit code' in state['note']
 
 
+def test_a_job_records_the_file_its_output_is_in(workdir):
+    store = jobs.JobStore()
+    job_id, job_dir = make_job(store, workdir)
+    assert store.status(job_id)['out'] == 'out'
+
+    store.record_out(job_id, 'out.1')
+
+    assert store.status(job_id)['out'] == 'out.1'
+    assert jobs.read_json(job_dir / 'meta.json')['out'] == 'out.1'  # on disk, so it outlives the server
+
+
+def test_a_record_written_before_this_key_existed_reads_as_the_plain_name(workdir):
+    """Registries on disk outlive releases, and every job written before keep_previous wrote `out`."""
+    store = jobs.JobStore()
+    job_id, job_dir = make_job(store, workdir)
+    meta = jobs.read_json(job_dir / 'meta.json')
+    del meta['out']
+    jobs.write_json(job_dir / 'meta.json', meta)
+
+    assert store.status(job_id)['out'] == 'out'
+
+
 def test_all_status_is_newest_first(workdir):
     store = jobs.JobStore()
     ids = [make_job(store, workdir)[0] for _ in range(3)]

@@ -62,6 +62,7 @@ def cmd_run(args) -> int:
             resume=args.resume,
             unlock=args.unlock,
             allow_concurrent=args.allow_concurrent,
+            keep_previous=args.keep_previous,
         )
     )
 
@@ -194,6 +195,11 @@ def build_parser() -> argparse.ArgumentParser:
         '--allow-concurrent',
         action='store_true',
         help='start even though another job of this server is running; they then share the cores, and cpu_time says so',
+    )
+    run.add_argument(
+        '--keep-previous',
+        action='store_true',
+        help='with --restart, move the old `out` to the first free `out.N` instead of deleting it',
     )
     run.set_defaults(func=cmd_run)
 

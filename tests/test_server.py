@@ -48,7 +48,7 @@ def test_no_generic_shell_tool_exists():
 
 def test_run_signature_matches_the_runtime():
     parameters = inspect.signature(server.casino_run).parameters
-    assert list(parameters) == ['workdir', 'nproc', 'version', 'restart', 'resume', 'unlock', 'allow_concurrent']
+    assert list(parameters) == ['workdir', 'nproc', 'version', 'restart', 'resume', 'unlock', 'allow_concurrent', 'keep_previous']
     # these defaults are in the schema the model reads, so they must be the real ones
     assert parameters['nproc'].default == settings.NPROC
     assert parameters['version'].default == settings.VERSION
@@ -103,7 +103,16 @@ def test_run_passes_every_argument_through(monkeypatch):
     seen = {}
     monkeypatch.setattr(runtime, 'start', lambda workdir, **kwargs: seen.update(workdir=workdir, **kwargs) or {})
     server.casino_run('/tmp/calc', nproc=4, version='debug', restart=True, unlock=True)
-    expected = {'workdir': '/tmp/calc', 'nproc': 4, 'version': 'debug', 'restart': True, 'resume': False, 'unlock': True, 'allow_concurrent': False}
+    expected = {
+        'workdir': '/tmp/calc',
+        'nproc': 4,
+        'version': 'debug',
+        'restart': True,
+        'resume': False,
+        'unlock': True,
+        'allow_concurrent': False,
+        'keep_previous': False,
+    }
     assert seen == expected
 
 

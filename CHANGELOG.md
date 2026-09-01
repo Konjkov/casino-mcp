@@ -60,6 +60,13 @@ All notable changes to this project are documented here. The format follows
   caller has nothing to answer with. So reading `cpu_time` against `real_time` afterwards is
   not a backstop but the check that holds, and it is one
   `casino_results(fields=['cpu_time', 'real_time'])`.
+- **`casino_run(restart=true, keep_previous=true)`** (`casino-mcp run --keep-previous`) moves
+  `out` to the first free `out.1`, `out.2`, ... instead of deleting it; the rest of what
+  `restart` deletes goes as before, and the reply says where it went, under `kept`. The
+  numbering ends up being the order the runs happened in. The archives are deliberately not in
+  `DEBRIS`, and are not named `out_part.N` -- that name is runqmc's own, for the segments of a
+  `--continue`, and it *is* in `DEBRIS`. Refused without `restart`: nothing is being deleted
+  then. What this is really for is the `casino_results` fix below.
 
 ### Changed
 
@@ -74,6 +81,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **`casino_results` for a job whose directory has been rerun answered with the wrong run's
+  numbers.** A job record held a directory, not a file, and the output was found in it by the
+  name `out` -- which holds for exactly as long as one run has happened there. After a restart
+  in place, the earlier job answered with the physics of the run that came after it, under its
+  own id, with its own status and its own start time, and nothing in the reply saying so. Job
+  records now name the file, `casino_status` reports it as `out`, and `keep_previous` moves the
+  record along with the file, so each job goes on answering with what it produced. Records
+  written before this read as `out`, which is what every one of them wrote.
 - `advise` no longer tells a `runtype : vmc` input that CASINO will not read its `opt_dtvmc`.
   `unused` placed a keyword by its prefix, and `opt_dtvmc` is named like an optimisation
   keyword and is a VMC one — the VMC phase's own time-step optimisation. Which phase a keyword

@@ -182,7 +182,7 @@ Without the second, a recycled PID reports a finished job as running.
 
 | tool | returns |
 | --- | --- |
-| `casino_run(workdir, nproc, restart, resume, unlock, allow_concurrent)` | job_id, pid, workdir, command, started, removed; refused while another job of this server runs |
+| `casino_run(workdir, nproc, restart, resume, unlock, allow_concurrent, keep_previous)` | job_id, pid, workdir, command, started, removed, kept; refused while another job of this server runs |
 | `casino_status(job_id)` | running/finished/failed, pid, runtime, exit code |
 | `casino_wait(job_id, timeout)` | blocks until the job ends; `waited`, `timed_out` |
 | `casino_stop(job_id)` | what was signalled, final status, what `haltqmc` did |

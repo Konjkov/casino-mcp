@@ -106,6 +106,14 @@ class Started(BaseModel):
     removed: list[str] | None = Field(
         None, description='what `restart` deleted before starting, named so that a restart that ate more than was expected is visible here'
     )
+    kept: str | None = Field(
+        None,
+        description=(
+            'where the previous `out` was moved to rather than deleted, `out.1`, `out.2` and so on in the order the '
+            'runs happened; only present when keep_previous asked for it. The job that wrote that file still reads '
+            'it from there, so casino_results for the earlier run goes on answering with its own numbers'
+        ),
+    )
     concurrent: list[dict[str, Any]] | None = Field(
         None,
         description=(
@@ -230,6 +238,13 @@ class JobState(BaseModel):
     stopped: str | None = Field(None, description='local time casino_stop signalled it')
     runtime: float | None = Field(None, description='seconds of wall clock since the job started, or its whole life once it ended; not CPU time')
     exit_code: int | None = Field(None, description="runqmc's exit code")
+    out: str | None = Field(
+        None,
+        description=(
+            "the file in workdir this job's output is in: `out`, or the `out.N` a later run's keep_previous moved it "
+            'to. What casino_results reads for this job'
+        ),
+    )
     runqmc_log: str | None = Field(None, description="the launcher's own log, where a failure that never reached CASINO is explained")
     note: str | None = Field(None, description='something about this answer the caller would otherwise have to infer')
     error: str | None = Field(None, description='set instead of everything else when the call could not be answered')
@@ -359,6 +374,7 @@ def casino_run(
     resume: bool = False,
     unlock: bool = False,
     allow_concurrent: bool = False,
+    keep_previous: bool = False,
 ) -> Started:
     """Start a CASINO calculation in workdir and return immediately.
 
@@ -396,9 +412,24 @@ def casino_run(
         jobs this server started are known, so a run started around it is invisible here: read
         `cpu_time` and `real_time` back afterwards either way, which is one
         `casino_results(fields=['cpu_time', 'real_time'])`.
+    keep_previous: with `restart`, move the old `out` to the first free `out.N` instead of
+        deleting it; everything else `restart` deletes goes as before. Pass it whenever the
+        previous answer is still worth something -- a rerun of the same directory with one
+        keyword changed, which is what a two-pass campaign is. The alternative is a fresh
+        directory through casino_prepare, which copies the wave function too. The old job's
+        record follows the file, so `casino_results` for the earlier run keeps answering with
+        the numbers that run produced rather than with this one's. The reply says where the
+        file went, under `kept`. Refused without `restart`: nothing is being deleted then.
     """
     return runtime.start(  # type: ignore[return-value]
-        workdir, nproc=nproc, version=version, restart=restart, resume=resume, unlock=unlock, allow_concurrent=allow_concurrent
+        workdir,
+        nproc=nproc,
+        version=version,
+        restart=restart,
+        resume=resume,
+        unlock=unlock,
+        allow_concurrent=allow_concurrent,
+        keep_previous=keep_previous,
     )
 
 
